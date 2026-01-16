@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  wp-setup-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wp_setup_service
+    ports:
+      - "5000:8000"
+    environment:
+      - PLUGIN_ZIP_PATH=/app/plugin.zip
+      - TIMEOUT=120
+      - LOG_LEVEL=info
+    volumes:
+      - ../custom-wp-migrator-plugin.zip:/app/plugin.zip:ro
+    networks:
+      - wp_migration_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  wp_migration_net:
+    external: true

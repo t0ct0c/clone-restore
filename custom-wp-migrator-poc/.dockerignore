@@ -1,0 +1,8 @@
+.git
+.gitignore
+README.md
+docker-compose.yml
+railway-deploy/
+*.log
+*.md
+.env

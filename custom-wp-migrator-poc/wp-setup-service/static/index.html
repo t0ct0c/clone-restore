@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WordPress Clone Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+            font-size: 14px;
+        }
+        
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 30px;
+        }
+        
+        button {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .btn-clone {
+            background: #667eea;
+            color: white;
+        }
+        
+        .btn-clone:hover:not(:disabled) {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-restore {
+            background: #f093fb;
+            color: white;
+        }
+        
+        .btn-restore:hover:not(:disabled) {
+            background: #e07beb;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(240, 147, 251, 0.4);
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .status.loading {
+            display: block;
+            background: #e3f2fd;
+            color: #1976d2;
+            border-left: 4px solid #1976d2;
+        }
+        
+        .status.success {
+            display: block;
+            background: #e8f5e9;
+            color: #2e7d32;
+            border-left: 4px solid #2e7d32;
+        }
+        
+        .status.error {
+            display: block;
+            background: #ffebee;
+            color: #c62828;
+            border-left: 4px solid #c62828;
+        }
+        
+        .progress-container {
+            margin-top: 16px;
+            display: none;
+        }
+        
+        .progress-container.active {
+            display: block;
+        }
+        
+        .progress-steps {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 12px;
+            position: relative;
+        }
+        
+        .progress-step {
+            flex: 1;
+            text-align: center;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .progress-step-circle {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: #e0e0e0;
+            color: #999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 8px;
+            font-weight: 600;
+            transition: all 0.3s;
+        }
+        
+        .progress-step.active .progress-step-circle {
+            background: #667eea;
+            color: white;
+            animation: pulse 1.5s infinite;
+        }
+        
+        .progress-step.completed .progress-step-circle {
+            background: #2e7d32;
+            color: white;
+        }
+        
+        .progress-step-label {
+            font-size: 12px;
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .progress-step.active .progress-step-label {
+            color: #667eea;
+            font-weight: 600;
+        }
+        
+        .progress-step.completed .progress-step-label {
+            color: #2e7d32;
+        }
+        
+        .progress-line {
+            position: absolute;
+            top: 20px;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: #e0e0e0;
+            z-index: 0;
+        }
+        
+        .progress-line-fill {
+            height: 100%;
+            background: #667eea;
+            transition: width 0.5s ease;
+            width: 0%;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+        
+        .result-details {
+            margin-top: 12px;
+            padding: 12px;
+            background: #f5f5f5;
+            border-radius: 4px;
+            font-size: 13px;
+            font-family: monospace;
+        }
+        
+        .result-details div {
+            margin: 6px 0;
+        }
+        
+        .result-details strong {
+            color: #333;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #1976d2;
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin-right: 8px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 WordPress Clone Manager</h1>
+        <p class="subtitle">Clone your WordPress site to an ephemeral target on AWS</p>
+        
+        <form id="cloneForm">
+            <div class="form-group">
+                <label for="sourceUrl">Source WordPress URL</label>
+                <input 
+                    type="url" 
+                    id="sourceUrl" 
+                    name="sourceUrl" 
+                    placeholder="https://your-wordpress-site.com"
+                    required
+                >
+            </div>
+            
+            <div class="form-group">
+                <label for="username">WordPress Admin Username</label>
+                <input 
+                    type="text" 
+                    id="username" 
+                    name="username" 
+                    placeholder="admin"
+                    required
+                >
+            </div>
+            
+            <div class="form-group">
+                <label for="password">WordPress Admin Password</label>
+                <input 
+                    type="password" 
+                    id="password" 
+                    name="password" 
+                    placeholder="••••••••"
+                    required
+                >
+            </div>
+            
+            <div class="button-group">
+                <button type="submit" class="btn-clone" data-action="clone">
+                    Clone to New Target
+                </button>
+                <button type="button" class="btn-restore" data-action="restore">
+                    Restore/Rollback
+                </button>
+            </div>
+        </form>
+        
+        <div id="progressContainer" class="progress-container">
+            <div class="progress-steps">
+                <div class="progress-line">
+                    <div id="progressLineFill" class="progress-line-fill"></div>
+                </div>
+                <div id="step1" class="progress-step">
+                    <div class="progress-step-circle">1</div>
+                    <div class="progress-step-label">Setup Source</div>
+                </div>
+                <div id="step2" class="progress-step">
+                    <div class="progress-step-circle">2</div>
+                    <div class="progress-step-label">Provision Target</div>
+                </div>
+                <div id="step3" class="progress-step">
+                    <div class="progress-step-circle">3</div>
+                    <div class="progress-step-label">Clone Content</div>
+                </div>
+                <div id="step4" class="progress-step">
+                    <div class="progress-step-circle">✓</div>
+                    <div class="progress-step-label">Complete</div>
+                </div>
+            </div>
+            <div id="progressMessage" style="text-align: center; color: #666; font-size: 14px; margin-top: 8px;"></div>
+        </div>
+        
+        <div id="status" class="status"></div>
+    </div>
+    
+    <script>
+        const form = document.getElementById('cloneForm');
+        const status = document.getElementById('status');
+        const buttons = document.querySelectorAll('button');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressLineFill = document.getElementById('progressLineFill');
+        const progressMessage = document.getElementById('progressMessage');
+        
+        function updateProgress(step, message) {
+            // Show progress container
+            progressContainer.classList.add('active');
+            
+            // Update progress message
+            progressMessage.textContent = message;
+            
+            // Update steps
+            for (let i = 1; i <= 4; i++) {
+                const stepEl = document.getElementById(`step${i}`);
+                stepEl.classList.remove('active', 'completed');
+                
+                if (i < step) {
+                    stepEl.classList.add('completed');
+                } else if (i === step) {
+                    stepEl.classList.add('active');
+                }
+            }
+            
+            // Update progress line
+            const progress = ((step - 1) / 3) * 100;
+            progressLineFill.style.width = `${progress}%`;
+        }
+        
+        function hideProgress() {
+            progressContainer.classList.remove('active');
+            progressLineFill.style.width = '0%';
+        }
+        
+        async function performAction(action, data) {
+            const endpoint = action === 'clone' ? '/clone' : '/restore';
+            
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        source: {
+                            url: data.sourceUrl,
+                            username: data.username,
+                            password: data.password
+                        }
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(result.detail || 'Operation failed');
+                }
+                
+                return result;
+            } catch (error) {
+                throw error;
+            }
+        }
+        
+        function showStatus(type, message, details = null) {
+            status.style.display = 'block';
+            status.className = `status ${type}`;
+            
+            let html = message;
+            
+            if (type === 'loading') {
+                html = `<span class="spinner"></span>${message}`;
+            }
+            
+            if (details) {
+                html += '<div class="result-details">';
+                for (const [key, value] of Object.entries(details)) {
+                    if (key === 'Target URL') {
+                        html += `<div><strong>${key}:</strong> <a href="${value}" target="_blank" rel="noopener noreferrer">${value}</a></div>`;
+                    } else {
+                        html += `<div><strong>${key}:</strong> ${value}</div>`;
+                    }
+                }
+                html += '</div>';
+            }
+            
+            status.innerHTML = html;
+        }
+        
+        function setButtonsDisabled(disabled) {
+            buttons.forEach(btn => btn.disabled = disabled);
+        }
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = {
+                sourceUrl: document.getElementById('sourceUrl').value,
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value
+            };
+            
+            setButtonsDisabled(true);
+            status.style.display = 'none';
+            
+            try {
+                // Stage 1: Setup Source
+                updateProgress(1, 'Setting up source WordPress and installing plugin...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Stage 2: Provision Target
+                updateProgress(2, 'Provisioning ephemeral WordPress target on AWS EC2...');
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                
+                // Stage 3: Clone Content
+                updateProgress(3, 'Cloning content from source to target...');
+                
+                // Perform the actual clone
+                const result = await performAction('clone', formData);
+                
+                // Stage 4: Complete
+                updateProgress(4, 'Clone completed successfully!');
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                const details = {
+                    'Status': '✅ Success',
+                    'Message': result.message
+                };
+                
+                if (result.provisioned_target) {
+                    details['Target URL'] = result.provisioned_target.target_url;
+                    details['Username'] = result.provisioned_target.wordpress_username;
+                    details['Password'] = result.provisioned_target.wordpress_password;
+                    details['Expires At'] = result.provisioned_target.expires_at;
+                }
+                
+                showStatus('success', '🎉 Clone completed successfully!', details);
+            } catch (error) {
+                hideProgress();
+                showStatus('error', `❌ Clone failed: ${error.message}`);
+            } finally {
+                setButtonsDisabled(false);
+            }
+        });
+        
+        document.querySelector('[data-action="restore"]').addEventListener('click', async () => {
+            const formData = {
+                sourceUrl: document.getElementById('sourceUrl').value,
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value
+            };
+            
+            if (!formData.sourceUrl || !formData.username || !formData.password) {
+                showStatus('error', '❌ Please fill in all fields');
+                return;
+            }
+            
+            setButtonsDisabled(true);
+            status.style.display = 'none';
+            
+            try {
+                // Stage 1: Setup Source
+                updateProgress(1, 'Setting up source WordPress and installing plugin...');
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Stage 2: Provision Target
+                updateProgress(2, 'Provisioning ephemeral WordPress target on AWS EC2...');
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                
+                // Stage 3: Restore Content
+                updateProgress(3, 'Restoring content from source to target...');
+                
+                // Perform the actual restore
+                const result = await performAction('restore', formData);
+                
+                // Stage 4: Complete
+                updateProgress(4, 'Restore completed successfully!');
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                const details = {
+                    'Status': '✅ Success',
+                    'Message': result.message
+                };
+                
+                if (result.provisioned_target) {
+                    details['Target URL'] = result.provisioned_target.target_url;
+                    details['Username'] = result.provisioned_target.wordpress_username;
+                    details['Password'] = result.provisioned_target.wordpress_password;
+                    details['Expires At'] = result.provisioned_target.expires_at;
+                }
+                
+                showStatus('success', '🎉 Restore completed successfully!', details);
+            } catch (error) {
+                hideProgress();
+                showStatus('error', `❌ Restore failed: ${error.message}`);
+            } finally {
+                setButtonsDisabled(false);
+            }
+        });
+    </script>
+</body>
+</html>

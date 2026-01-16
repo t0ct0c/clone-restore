@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  # Local target instance only
+  db_target:
+    image: mysql:8.0
+    container_name: wp_migration_db_target
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpass
+      MYSQL_DATABASE: wordpress_target
+      MYSQL_USER: wpuser
+      MYSQL_PASSWORD: wppass
+    volumes:
+      - db_target_data:/var/lib/mysql
+    networks:
+      - wp_migration_net
+
+  wp_target:
+    image: wordpress:latest
+    container_name: wp_migration_target
+    depends_on:
+      - db_target
+    ports:
+      - "8081:80"
+    environment:
+      WORDPRESS_DB_HOST: db_target:3306
+      WORDPRESS_DB_USER: wpuser
+      WORDPRESS_DB_PASSWORD: wppass
+      WORDPRESS_DB_NAME: wordpress_target
+    volumes:
+      - target_wp_content:/var/www/html/wp-content
+      - ./plugin:/var/www/html/wp-content/plugins/custom-migrator
+    networks:
+      - wp_migration_net
+
+volumes:
+  db_target_data:
+  target_wp_content:
+
+networks:
+  wp_migration_net:
+    driver: bridge

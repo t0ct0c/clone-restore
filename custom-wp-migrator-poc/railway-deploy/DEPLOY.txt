@@ -1,0 +1,10 @@
+# Build and push to GHCR
+docker build -f docker/Dockerfile -t ghcr.io/YOUR_USERNAME/wordpress-migrator:latest .
+docker push ghcr.io/YOUR_USERNAME/wordpress-migrator:latest
+
+# For Railway deployment:
+# 1. Create MySQL service in Railway
+# 2. Create new service from Docker image
+# 3. Set image: ghcr.io/YOUR_USERNAME/wordpress-migrator:latest
+# 4. Add environment variables from .env.example (Railway auto-fills MySQL vars)
+# 5. Expose port 80
