@@ -62,3 +62,8 @@ node_modules/
 *.gz
 *.tar.gz
 *.tgz
+
+# custom
+QODER.mod
+.qoder/
+openspec/
