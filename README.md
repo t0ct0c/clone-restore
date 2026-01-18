@@ -1,74 +1,87 @@
 # WordPress Clone Manager
 
-> **Status:** ✅ Service is **DEPLOYED** and operational
+> **Status:** ✅ Service is **FULLY OPERATIONAL** with MySQL Backend & Observability
 
 ## 🎯 What This Does
 
-This service **automatically clones WordPress sites** without any manual steps. Just provide admin credentials, and it:
+This service **automatically clones WordPress sites** with production-grade fidelity. It eliminates manual migration steps by automating the entire lifecycle:
 
-1. ✅ Installs the migration plugin automatically
-2. ✅ Exports the source WordPress site
-3. ✅ Creates a fresh target WordPress instance (optional)
-4. ✅ Imports everything to the target
-5. ✅ Returns the cloned site URL
-
-**No clicking, no manual plugin installation, no copy-pasting API keys.**
+1.  ✅ **Zero-Touch Setup**: Automatically installs and activates the migration plugin on the source site via browser automation.
+2.  ✅ **Design-Preserving Export**: Captures the entire database, plugins, themes, and media.
+3.  ✅ **Ephemeral Infrastructure**: Provisions high-performance AWS EC2 targets with **MySQL backends** (replacing SQLite for 100% compatibility).
+4.  ✅ **Path-Based Routing**: Supports multiple clones on a single host using subpaths (e.g., `/clone-xxx/`) via Nginx.
+5.  ✅ **Credential Persistence**: Automatically re-injects your provided admin credentials after the database import.
+6.  ✅ **Full Observability**: Integrated with Loki for logs and Tempo for OTLP traces.
 
 ---
 
 ## 🏗️ Architecture Overview
 
 ```mermaid
-graph TB
-    subgraph Client["👤 Client"]
-        USER[Developer/API Consumer]
+graph TD
+    subgraph Client["👤 Client Layer"]
+        USER[Developer / API Consumer]
+        note1[Initiates clone request with<br/>source credentials and TTL]
     end
-    
-    subgraph Service["🚀 Clone Manager Service<br/>FastAPI @ 35.171.228.29:8000"]
-        API[REST API Endpoints]
-        AUTH[WordPress Authenticator]
-        BROWSER[Playwright Browser Automation]
-        PROV[EC2 Provisioner]
+
+    subgraph MGMT["🚀 Management Host (10.0.4.2)"]
+        FASTAPI[FastAPI Manager<br/>Port 8000]
+        note2[Orchestrates the entire workflow:<br/>Auth -> Provision -> Deploy -> Clone]
+        
+        PW[Playwright Engine]
+        note3[Headless browser that logs into<br/>source WP to install migrator plugin]
+        
+        TF[Terraform]
+        note4[Manages AWS EC2 instances<br/>and Security Groups]
+        
+        subgraph OBS["📊 Observability Stack"]
+            GRAFANA[Grafana Dashboard]
+            LOKI[Loki Log Store]
+            TEMPO[Tempo Trace Store]
+            note5[Centralized logs and traces from<br/>all ephemeral clones]
+        end
     end
-    
-    subgraph Source["🌍 Source WordPress"]
-        SRC_SITE[Production/Staging Site]
-        SRC_PLUGIN[Custom Migrator Plugin]
+
+    subgraph SOURCE["🌍 Source WordPress"]
+        WP_SRC[Live WordPress Site]
+        PLUGIN_SRC[Migrator Plugin]
+        note6[Handles background export of<br/>database and files to ZIP]
     end
-    
-    subgraph Target["🎯 Target WordPress"]
-        TGT_SITE[Destination Site]
-        TGT_PLUGIN[Custom Migrator Plugin]
+
+    subgraph TARGET_EC2["☁️ Target EC2 Host (Auto-Scaled)"]
+        NGINX[Nginx Reverse Proxy]
+        note7[Routes incoming traffic to specific<br/>clones based on URL prefix]
+        
+        subgraph CLONE_V["📦 Production-Grade Clone"]
+            WP_TGT[WordPress Container]
+            DB_TGT[MySQL Container]
+            note8[Full MySQL backend for perfect<br/>theme/plugin compatibility]
+        end
     end
+
+    USER -->|1. POST /clone| FASTAPI
+    FASTAPI -->|2. Automate Login| PW
+    PW -->|Upload & Activate| WP_SRC
+    WP_SRC -->|Generate ZIP| PLUGIN_SRC
     
-    subgraph AWS["☁️ AWS Infrastructure"]
-        EC2[Auto-Provisioned EC2]
-        DOCKER[WordPress Container]
-    end
+    FASTAPI -->|3. Infrastructure| TF
+    TF -->|Provision 50GB EC2| TARGET_EC2
     
-    USER -->|1. POST /clone| API
-    API -->|2. Authenticate & Setup| AUTH
-    AUTH -->|Install Plugin| BROWSER
-    BROWSER -->|Setup| SRC_SITE
-    SRC_SITE -->|Generate API Key| SRC_PLUGIN
+    FASTAPI -->|4. Deploy Site| TARGET_EC2
+    TARGET_EC2 -->|Path /clone-xxx/| NGINX
+    NGINX -->|Upstream| WP_TGT
     
-    API -->|3. Provision Target| PROV
-    PROV -->|Create| EC2
-    EC2 -->|Run| DOCKER
-    DOCKER -->|WordPress Ready| TGT_SITE
+    WP_TGT -->|Persistent DB| DB_TGT
     
-    API -->|4. Setup Target| TGT_SITE
-    TGT_SITE -->|Ready| TGT_PLUGIN
+    PLUGIN_SRC -->|5. Data Sync| WP_TGT
     
-    SRC_PLUGIN -->|5. Export Content| API
-    API -->|6. Import Content| TGT_PLUGIN
+    WP_TGT -->|Push Logs| LOKI
+    WP_TGT -->|Push Traces| TEMPO
     
-    API -->|7. Return Credentials| USER
+    LOKI --- GRAFANA
+    TEMPO --- GRAFANA
     
-    style API fill:#4CAF50,stroke:#2E7D32,color:#fff
-    style SRC_SITE fill:#2196F3,stroke:#1565C0,color:#fff
-    style TGT_SITE fill:#FF9800,stroke:#E65100,color:#fff
-    style USER fill:#9C27B0,stroke:#6A1B9A,color:#fff
+    FASTAPI -->|6. Success| USER
 ```
 
 ---
@@ -77,232 +90,75 @@ graph TB
 
 ### Base URL
 ```
-http://35.171.228.29:8000
+http://10.0.4.2:8000
 ```
 
 ### Interactive Documentation
-- **Swagger UI:** http://35.171.228.29:8000/docs
+- **Swagger UI:** http://10.0.4.2:8000/docs
 
 ---
 
 ### `POST /clone`
 
-Clone a WordPress site from source to target.
+Clone a WordPress site from source to an ephemeral AWS target.
 
 #### Request Body
 
-**With auto-provisioning (recommended):**
+**Standard Clone Request:**
 ```json
 {
   "source": {
-    "url": "https://source-wordpress.com",
+    "url": "https://mysite.com",
     "username": "admin",
-    "password": "admin_password"
+    "password": "secure_password"
   },
   "auto_provision": true,
   "ttl_minutes": 60
 }
 ```
 
-**With existing target:**
-```json
-{
-  "source": {
-    "url": "https://source-wordpress.com",
-    "username": "admin",
-    "password": "admin_password"
-  },
-  "target": {
-    "url": "https://target-wordpress.com",
-    "username": "admin",
-    "password": "admin_password"
-  },
-  "auto_provision": false
-}
-```
+#### Key Parameters
 
-#### Parameters
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `source.url` | string | ✅ Yes | Source WordPress URL (must include http:// or https://) |
-| `source.username` | string | ✅ Yes | WordPress admin username |
-| `source.password` | string | ✅ Yes | WordPress admin password |
-| `target.url` | string | ⚠️ If `auto_provision=false` | Target WordPress URL |
-| `target.username` | string | ⚠️ If `auto_provision=false` | Target admin username |
-| `target.password` | string | ⚠️ If `auto_provision=false` | Target admin password |
-| `auto_provision` | boolean | No (default: `true`) | Auto-create AWS target if `true` |
-| `ttl_minutes` | integer | No (default: `60`) | How long auto-provisioned target lives (5-120 min) |
-
-#### Response (Success)
-
-```json
-{
-  "success": true,
-  "message": "Clone completed successfully",
-  "source_api_key": "abc123def456...",
-  "target_api_key": "xyz789uvw012...",
-  "target_import_enabled": true,
-  "provisioned_target": {
-    "target_url": "https://clone-20240115-143022.temp.yourdomain.com",
-    "wordpress_username": "admin",
-    "wordpress_password": "auto_generated_pass_123",
-    "expires_at": "2024-01-15T15:30:22Z",
-    "ttl_minutes": 60,
-    "customer_id": "clone-20240115-143022"
-  }
-}
-```
-
-#### Response (Error)
-
-```json
-{
-  "detail": "Source setup failed: Invalid WordPress credentials"
-}
-```
-
-#### Common Error Codes
-
-| Status Code | Error | Cause | Solution |
-|-------------|-------|-------|----------|
-| 401 | AUTH_FAILED | Invalid username/password | Check credentials |
-| 403 | NOT_ADMIN | User is not administrator | Use admin account |
-| 500 | PLUGIN_UPLOAD_FAILED | Can't write to wp-content/plugins | Check file permissions |
-| 500 | EXPORT_FAILED | Source export failed | Check source site logs |
-| 500 | IMPORT_FAILED | Target import failed | Check target site logs |
-| 503 | NO_CAPACITY | No EC2 capacity | Wait or scale infrastructure |
+| Field | Type | Description |
+|-------|------|-------------|
+| `source.url` | string | Full URL of the site to clone |
+| `auto_provision` | boolean | If `true`, creates a fresh EC2 instance |
+| `ttl_minutes` | integer | Minutes before the clone is auto-destroyed |
 
 ---
 
-### `POST /setup`
+## ✅ Current System State
 
-Install plugin and get API key for a single WordPress site.
-
-#### Request Body
-
-```json
-{
-  "url": "https://wordpress-site.com",
-  "username": "admin",
-  "password": "password",
-  "role": "target"
-}
-```
-
-#### Response
-
-```json
-{
-  "success": true,
-  "api_key": "abc123def456...",
-  "plugin_status": "activated",
-  "import_enabled": true,
-  "message": "Setup completed successfully"
-}
-```
+| Feature | Status | Technology |
+|---------|--------|------------|
+| **Database** | ✅ **MySQL** | Replaced SQLite for full plugin compatibility |
+| **Routing** | ✅ **Path-Based** | Clones accessible via `/clone-{id}/` |
+| **Storage** | ✅ **50GB EBS** | Increased from 8GB to support large site migrations |
+| **Logging** | ✅ **Loki** | All container logs streamed to management host |
+| **Tracing** | ✅ **Tempo** | OTLP traces available for debugging bottlenecks |
+| **Auth** | ✅ **Persistent** | Admin credentials re-synced post-import |
+| **Infrastructure** | ✅ **Terraform** | Automated EC2 gp3 volume provisioning |
 
 ---
 
-### `GET /health`
+## 📊 Performance & Limits
 
-Health check endpoint.
-
-#### Response
-
-```json
-{
-  "status": "healthy",
-  "version": "1.0.0"
-}
-```
+*   **Small Site (<200MB)**: ~2-3 minutes total.
+*   **Large Site (>1GB)**: ~5-10 minutes (depends on source bandwidth).
+*   **Concurrent Clones**: Supports up to 50 active containers per EC2 host (ports 8001-8050).
+*   **Auto-Cleanup**: Background tasks prune inactive containers and reclaim disk space.
 
 ---
 
-### `POST /provision`
+## 🛠️ Troubleshooting & Logs
 
-Provision ephemeral WordPress target on AWS EC2.
-
-#### Request Body
-
-```json
-{
-  "customer_id": "client-abc-123",
-  "ttl_minutes": 30
-}
-```
-
-#### Response
-
-```json
-{
-  "success": true,
-  "target_url": "http://44.223.105.204:8001",
-  "wordpress_username": "admin",
-  "wordpress_password": "wp_pass_abc123",
-  "expires_at": "2024-01-15T15:30:00Z",
-  "status": "running"
-}
-```
+If a clone fails, check the logs in Grafana:
+1.  Open Grafana @ `http://10.0.4.2:3000`
+2.  Go to **Explore** -> Select **Loki**
+3.  Filter by `{container_name=~"clone-.*"}`
 
 ---
 
-## ✅ What's Working
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| WordPress authentication | ✅ Working | Cookie-based auth via wp-login.php |
-| Plugin upload | ✅ Working | Multipart form upload via /wp-admin/update.php |
-| Plugin activation | ✅ Working | Playwright browser automation |
-| API key retrieval | ✅ Working | Extracted from browser session during activation |
-| Export operation | ✅ Working | Calls plugin's /wp-json/custom-migrator/v1/export |
-| Import operation | ✅ Working | Calls plugin's /wp-json/custom-migrator/v1/import |
-| `/clone` endpoint | ✅ Working | End-to-end clone with user-provided target |
-| `/setup` endpoint | ✅ Working | Single-site setup |
-| `/health` endpoint | ✅ Working | Health checks |
-
----
-
-## 🔒 Security Considerations
-
-### Current Status: ⚠️ No Authentication
-
-The API currently has **no authentication** and should only be used in trusted networks.
-
-### Before Production:
-
-1. **Add API Key Authentication**
-2. **Enable HTTPS** - Put behind Nginx/Apache with SSL certificate
-3. **Add Rate Limiting** - Prevent abuse (e.g., 10 requests/hour per IP)
-4. **Validate WordPress Credentials** - Never log passwords, use encrypted storage
-
----
-
-## 📊 Performance
-
-| Operation | Typical Time | Notes |
-|-----------|-------------|-------|
-| Plugin installation | 5-10 seconds | Upload + activate |
-| WordPress authentication | 2-3 seconds | Cookie-based login |
-| Site export (small site <100MB) | 10-30 seconds | Database + files |
-| Site export (large site >1GB) | 2-5 minutes | Depends on size |
-| Site import | 30-60 seconds | Extract + restore DB |
-| **Total clone time (small site)** | **1-2 minutes** | End-to-end |
-| **Total clone time (large site)** | **5-10 minutes** | End-to-end |
-
----
-
-## 📝 Next Steps
-
-### Recommended Improvements:
-1. 🔒 Add API authentication
-2. 🌐 Add HTTPS support
-3. 📊 Add clone progress tracking
-4. 🔔 Add webhook notifications on completion
-5. 📈 Add monitoring/observability (metrics, traces)
-
----
-
-**Last Updated:** 2024-01-15  
-**Service Version:** 1.0.0  
-**Deployment:** AWS EC2 (35.171.228.29:8000)
+**Last Updated:** 2026-01-16  
+**Service Version:** 1.2.0 (MySQL Edition)  
+**Deployment:** AWS Private VPC (Management Host: 10.0.4.2)
