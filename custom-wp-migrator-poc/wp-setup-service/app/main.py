@@ -4,7 +4,7 @@ WordPress Setup Service - FastAPI Application
 Provides REST API for automated WordPress plugin installation and cloning.
 """
 
-import logging
+from loguru import logger
 import time
 import os
 from typing import Optional, Dict
@@ -15,19 +15,50 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, HttpUrl, Field
 import requests
 
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.requests import RequestsInstrumentor
+from opentelemetry.sdk.resources import Resource
+
 from .wp_auth import WordPressAuthenticator
 from .wp_plugin import WordPressPluginInstaller
 from .wp_options import WordPressOptionsFetcher
 from .ec2_provisioner import EC2Provisioner
-from .browser_setup import setup_target_with_browser
+from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser
 
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Configure loguru
+import sys
+logger.remove()
+logger.add(
+    sys.stderr, 
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level> trace_id={extra[trace_id]}", 
+    level="INFO",
+    filter=lambda record: "trace_id" in record["extra"]
 )
-logger = logging.getLogger(__name__)
+logger.add(
+    sys.stderr, 
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level> trace_id=0", 
+    level="INFO",
+    filter=lambda record: "trace_id" not in record["extra"]
+)
+
+# Configure OpenTelemetry
+resource = Resource.create({"service.name": "wp-setup-service"})
+trace.set_tracer_provider(TracerProvider(resource=resource))
+tracer = trace.get_tracer(__name__)
+
+# Use the management host IP for tracing if not specified
+# Inside Docker, localhost:4318 will fail. We default to the management host's private IP.
+DEFAULT_OTEL_ENDPOINT = "http://10.0.4.2:4318/v1/traces"
+otlp_exporter = OTLPSpanExporter(
+    endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", DEFAULT_OTEL_ENDPOINT)
+)
+span_processor = SimpleSpanProcessor(otlp_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
 
 # Initialize FastAPI
 app = FastAPI(
@@ -35,6 +66,10 @@ app = FastAPI(
     description="Automated WordPress plugin installation and cloning service",
     version="1.0.0"
 )
+
+# Instrument FastAPI with OpenTelemetry
+FastAPIInstrumentor.instrument_app(app)
+RequestsInstrumentor().instrument()
 
 # Mount static files
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'static')
@@ -115,213 +150,224 @@ async def setup_wordpress(url: str, username: str, password: str, role: str = 's
     Returns:
         Dict with setup results
     """
-    logger.info(f"Starting setup for {url} (role: {role})")
-    
-    try:
-        import traceback
-        # Step 1: Authenticate
-        auth = WordPressAuthenticator(str(url))
-        if not auth.authenticate(username, password):
-            return {
-                'success': False,
-                'error_code': 'AUTH_FAILED',
-                'message': 'Invalid WordPress credentials or user is not administrator'
-            }
+    with tracer.start_as_current_span(f"setup_wordpress_{role}") as span:
+        span.set_attribute("wordpress.url", url)
+        span.set_attribute("wordpress.role", role)
+        trace_id = format(span.get_span_context().trace_id, '032x')
+        l = logger.bind(trace_id=trace_id)
         
-        # Step 2: Check if plugin already installed
-        plugin_installer = WordPressPluginInstaller(auth.session, str(url))
-        plugin_status = plugin_installer.check_plugin_status(PLUGIN_SLUG)
+        l.info(f"Starting setup for {url} (role: {role})")
         
-        logger.info(f"Plugin status: {plugin_status}")
-        
-        # Step 3: Upload plugin if not installed
-        if plugin_status == 'not-installed':
-            logger.info("Plugin not found, uploading...")
-            
-            try:
-                upload_nonce = auth.get_nonce('plugin-upload')
-                if not upload_nonce:
-                    logger.error("Failed to get upload nonce")
+        try:
+            with logger.contextualize(trace_id=trace_id):
+                import traceback
+                # Step 1: Authenticate
+                auth = WordPressAuthenticator(str(url))
+                if not auth.authenticate(username, password):
                     return {
                         'success': False,
-                        'error_code': 'NONCE_ERROR',
-                        'message': 'Could not retrieve nonce for plugin upload'
+                        'error_code': 'AUTH_FAILED',
+                        'message': 'Invalid WordPress credentials or user is not administrator'
                     }
                 
-                logger.info(f"Got upload nonce, uploading plugin from {PLUGIN_ZIP_PATH}")
-                upload_result = plugin_installer.upload_plugin(PLUGIN_ZIP_PATH, upload_nonce)
-                logger.info(f"Plugin upload result: {upload_result}")
+                # Step 2: Check if plugin already installed
+                plugin_installer = WordPressPluginInstaller(auth.session, str(url))
+                plugin_status = plugin_installer.check_plugin_status(PLUGIN_SLUG)
                 
-                if not upload_result:
-                    logger.error("Plugin upload returned False")
-                    return {
-                        'success': False,
-                        'error_code': 'PLUGIN_UPLOAD_FAILED',
-                        'message': 'Failed to upload plugin ZIP file'
-                    }
-            except Exception as upload_error:
-                logger.error(f"Exception during plugin upload: {str(upload_error)}")
-                logger.error(f"Traceback: {traceback.format_exc()}")
-                return {
-                    'success': False,
-                    'error_code': 'PLUGIN_UPLOAD_EXCEPTION',
-                    'message': f'Plugin upload exception: {str(upload_error)}'
-                }
-            
-            plugin_status = 'inactive'
-        
-        # Initialize options fetcher
-        options_fetcher = WordPressOptionsFetcher(auth.session, str(url))
-        
-        # Step 4: Activate plugin if not active
-        if plugin_status == 'inactive':
-            logger.info("Activating plugin...")
-            
-            # Get both REST nonce and activation nonce
-            rest_nonce = auth.get_rest_nonce()
-            activate_nonce = auth.get_nonce('activate-plugin', plugin_path=PLUGIN_PATH)
-            
-            if not activate_nonce:
-                return {
-                    'success': False,
-                    'error_code': 'NONCE_ERROR',
-                    'message': 'Could not retrieve nonce for plugin activation'
-                }
-            
-            activation_result = await plugin_installer.activate_plugin(PLUGIN_PATH, activate_nonce, rest_nonce, username, password)
-            
-            if not activation_result[0]:  # Check if activation succeeded
-                return {
-                    'success': False,
-                    'error_code': 'PLUGIN_ACTIVATION_FAILED',
-                    'message': 'Failed to activate plugin'
-                }
-            
-            # Check if API key was returned from browser activation
-            api_key = activation_result[1]
-            
-            if api_key:
-                logger.info(f"API key retrieved from browser session: {api_key[:10]}...")
-            else:
-                # Wait for activation hook to complete and API key generation
-                logger.info("Waiting for plugin activation hooks to complete...")
-                time.sleep(5)
+                l.info(f"Plugin status: {plugin_status}")
                 
-                # Step 5: Retrieve API key via requests session
-                api_key = options_fetcher.get_migrator_api_key()
+                # Step 3: Upload plugin if not installed
+                if plugin_status == 'not-installed':
+                    l.info("Plugin not found, uploading...")
+                    
+                    try:
+                        upload_nonce = auth.get_nonce('plugin-upload')
+                        if not upload_nonce:
+                            l.error("Failed to get upload nonce")
+                            return {
+                                'success': False,
+                                'error_code': 'NONCE_ERROR',
+                                'message': 'Could not retrieve nonce for plugin upload'
+                            }
+                        
+                        l.info(f"Got upload nonce, uploading plugin from {PLUGIN_ZIP_PATH}")
+                        upload_result = plugin_installer.upload_plugin(PLUGIN_ZIP_PATH, upload_nonce)
+                        l.info(f"Plugin upload result: {upload_result}")
+                        
+                        if not upload_result:
+                            l.error("Plugin upload returned False")
+                            return {
+                                'success': False,
+                                'error_code': 'PLUGIN_UPLOAD_FAILED',
+                                'message': 'Failed to upload plugin ZIP file'
+                            }
+                    except Exception as upload_error:
+                        l.error(f"Exception during plugin upload: {str(upload_error)}")
+                        l.error(f"Traceback: {traceback.format_exc()}")
+                        return {
+                            'success': False,
+                            'error_code': 'PLUGIN_UPLOAD_EXCEPTION',
+                            'message': f'Plugin upload exception: {str(upload_error)}'
+                        }
+                    
+                    plugin_status = 'inactive'
                 
-                if not api_key:
-                    return {
-                        'success': False,
-                        'error_code': 'API_KEY_NOT_FOUND',
-                        'message': 'Plugin activated but API key not found'
-                    }
-        else:
-            # Plugin already active, retrieve API key
-            api_key = options_fetcher.get_migrator_api_key()
-            
-            if not api_key:
-                logger.warning("API key not found for active plugin, attempting deactivate/reactivate...")
+                # Initialize options fetcher
+                options_fetcher = WordPressOptionsFetcher(auth.session, str(url))
                 
-                # Get deactivation nonce
-                deactivate_nonce = auth.get_nonce('deactivate-plugin', plugin_path=PLUGIN_PATH)
-                if not deactivate_nonce:
-                    return {
-                        'success': False,
-                        'error_code': 'NONCE_ERROR',
-                        'message': 'Could not retrieve nonce for plugin deactivation'
-                    }
-                
-                # Deactivate plugin
-                if not await plugin_installer.deactivate_plugin(PLUGIN_PATH, deactivate_nonce, username, password):
-                    return {
-                        'success': False,
-                        'error_code': 'PLUGIN_DEACTIVATION_FAILED',
-                        'message': 'Failed to deactivate plugin for API key regeneration'
-                    }
-                
-                logger.info("Plugin deactivated, now reactivating...")
-                time.sleep(2)
-                
-                # Get activation nonce
-                rest_nonce = auth.get_rest_nonce()
-                activate_nonce = auth.get_nonce('activate-plugin', plugin_path=PLUGIN_PATH)
-                
-                if not activate_nonce:
-                    return {
-                        'success': False,
-                        'error_code': 'NONCE_ERROR',
-                        'message': 'Could not retrieve nonce for plugin reactivation'
-                    }
-                
-                # Reactivate plugin
-                activation_result = await plugin_installer.activate_plugin(PLUGIN_PATH, activate_nonce, rest_nonce, username, password)
-                
-                if not activation_result[0]:
-                    return {
-                        'success': False,
-                        'error_code': 'PLUGIN_REACTIVATION_FAILED',
-                        'message': 'Failed to reactivate plugin'
-                    }
-                
-                # Check if API key was returned from browser activation
-                api_key = activation_result[1]
-                
-                if api_key:
-                    logger.info(f"API key retrieved from browser session after reactivation: {api_key[:10]}...")
+                # Step 4: Activate plugin if not active
+                if plugin_status == 'inactive':
+                    l.info("Activating plugin...")
+                    
+                    # Get both REST nonce and activation nonce
+                    rest_nonce = auth.get_rest_nonce()
+                    activate_nonce = auth.get_nonce('activate-plugin', plugin_path=PLUGIN_PATH)
+                    
+                    if not activate_nonce:
+                        return {
+                            'success': False,
+                            'error_code': 'NONCE_ERROR',
+                            'message': 'Could not retrieve nonce for plugin activation'
+                        }
+                    
+                    activation_result = await plugin_installer.activate_plugin(PLUGIN_PATH, activate_nonce, rest_nonce, username, password)
+                    
+                    if not activation_result[0]:  # Check if activation succeeded
+                        return {
+                            'success': False,
+                            'error_code': 'PLUGIN_ACTIVATION_FAILED',
+                            'message': 'Failed to activate plugin'
+                        }
+                    
+                    # Check if API key was returned from browser activation
+                    api_key = activation_result[1]
+                    
+                    if api_key:
+                        l.info(f"API key retrieved from browser session: {api_key[:10]}...")
+                    else:
+                        # Wait for activation hook to complete and API key generation
+                        l.info("Waiting for plugin activation hooks to complete...")
+                        time.sleep(5)
+                        
+                        # Step 5: Retrieve API key via requests session
+                        api_key = options_fetcher.get_migrator_api_key()
+                        
+                        if not api_key:
+                            return {
+                                'success': False,
+                                'error_code': 'API_KEY_NOT_FOUND',
+                                'message': 'Plugin activated but API key not found'
+                            }
                 else:
-                    # Wait and retry API key retrieval
-                    logger.info("Waiting for API key generation after reactivation...")
-                    time.sleep(5)
+                    # Plugin already active, retrieve API key
                     api_key = options_fetcher.get_migrator_api_key()
                     
                     if not api_key:
-                        return {
-                            'success': False,
-                            'error_code': 'API_KEY_NOT_FOUND',
-                            'message': 'Plugin reactivated but API key still not found'
-                        }
-        
-        # Step 6: Enable import for target sites
-        import_enabled = False
-        if role == 'target':
-            logger.info("Enabling import for target site...")
-            import_enabled = options_fetcher.enable_import()
-            if not import_enabled:
-                logger.warning("Failed to enable import, but continuing...")
-        
-        return {
-            'success': True,
-            'api_key': api_key,
-            'plugin_status': 'activated',
-            'import_enabled': import_enabled if role == 'target' else None,
-            'message': 'Setup completed successfully'
-        }
-        
-    except Exception as e:
-        logger.error(f"Setup failed with exception: {str(e)}")
-        logger.error(f"Full traceback: {traceback.format_exc()}")
-        return {
-            'success': False,
-            'error_code': 'SETUP_ERROR',
-            'message': f'Setup exception: {str(e)}'
-        }
+                        l.warning("API key not found for active plugin, attempting deactivate/reactivate...")
+                        
+                        # Get deactivation nonce
+                        deactivate_nonce = auth.get_nonce('deactivate-plugin', plugin_path=PLUGIN_PATH)
+                        if not deactivate_nonce:
+                            return {
+                                'success': False,
+                                'error_code': 'NONCE_ERROR',
+                                'message': 'Could not retrieve nonce for plugin deactivation'
+                            }
+                        
+                        # Deactivate plugin
+                        if not await plugin_installer.deactivate_plugin(PLUGIN_PATH, deactivate_nonce, username, password):
+                            return {
+                                'success': False,
+                                'error_code': 'PLUGIN_DEACTIVATION_FAILED',
+                                'message': 'Failed to deactivate plugin for API key regeneration'
+                            }
+                        
+                        l.info("Plugin deactivated, now reactivating...")
+                        time.sleep(2)
+                        
+                        # Get activation nonce
+                        rest_nonce = auth.get_rest_nonce()
+                        activate_nonce = auth.get_nonce('activate-plugin', plugin_path=PLUGIN_PATH)
+                        
+                        if not activate_nonce:
+                            return {
+                                'success': False,
+                                'error_code': 'NONCE_ERROR',
+                                'message': 'Could not retrieve nonce for plugin reactivation'
+                            }
+                        
+                        # Reactivate plugin
+                        activation_result = await plugin_installer.activate_plugin(PLUGIN_PATH, activate_nonce, rest_nonce, username, password)
+                        
+                        if not activation_result[0]:
+                            return {
+                                'success': False,
+                                'error_code': 'PLUGIN_REACTIVATION_FAILED',
+                                'message': 'Failed to reactivate plugin'
+                            }
+                        
+                        # Check if API key was returned from browser activation
+                        api_key = activation_result[1]
+                        
+                        if api_key:
+                            l.info(f"API key retrieved from browser session after reactivation: {api_key[:10]}...")
+                        else:
+                            # Wait and retry API key retrieval
+                            l.info("Waiting for API key generation after reactivation...")
+                            time.sleep(5)
+                            api_key = options_fetcher.get_migrator_api_key()
+                            
+                            if not api_key:
+                                return {
+                                    'success': False,
+                                    'error_code': 'API_KEY_NOT_FOUND',
+                                    'message': 'Plugin reactivated but API key still not found'
+                                }
+                
+                # Step 6: Enable import for target sites
+                import_enabled = False
+                if role == 'target':
+                    l.info("Enabling import for target site...")
+                    import_enabled = options_fetcher.enable_import()
+                    if not import_enabled:
+                        l.warning("Failed to enable import, but continuing...")
+                
+                return {
+                    'success': True,
+                    'api_key': api_key,
+                    'plugin_status': 'activated',
+                    'import_enabled': import_enabled if role == 'target' else None,
+                    'message': 'Setup completed successfully'
+                }
+            
+        except Exception as e:
+            l.error(f"Setup failed with exception: {str(e)}")
+            l.error(f"Full traceback: {traceback.format_exc()}")
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            return {
+                'success': False,
+                'error_code': 'SETUP_ERROR',
+                'message': f'Setup exception: {str(e)}'
+            }
 
 
-def perform_clone(source_url: str, source_api_key: str, target_url: str, target_api_key: str) -> dict:
+def perform_clone(source_url: str, source_api_key: str, target_url: str, target_api_key: str, public_target_url: str = None, admin_user: str = None, admin_password: str = None) -> dict:
     """
     Perform WordPress clone operation
     
     Args:
         source_url: Source WordPress URL
         source_api_key: Source API key
-        target_url: Target WordPress URL
+        target_url: Target WordPress URL (direct connection)
         target_api_key: Target API key
+        public_target_url: Public URL for database search-replace
+        admin_user: Administrator username to create/update after import
+        admin_password: Administrator password to create/update after import
     
     Returns:
         Dict with clone results
     """
-    logger.info(f"Starting clone from {source_url} to {target_url}")
+    logger.info(f"Starting clone from {source_url} to {target_url} (Public: {public_target_url})")
     
     try:
         # Step 1: Export from source
@@ -353,16 +399,24 @@ def perform_clone(source_url: str, source_api_key: str, target_url: str, target_
         
         # Step 2: Import to target
         logger.info("Importing to target...")
+        import_payload = {'archive_url': archive_url}
+        if public_target_url:
+            import_payload['public_url'] = public_target_url
+        
+        if admin_user and admin_password:
+            import_payload['admin_user'] = admin_user
+            import_payload['admin_password'] = admin_password
+
         import_response = requests.post(
             f"{target_url}/wp-json/custom-migrator/v1/import",
             headers={
                 'X-Migrator-Key': target_api_key,
                 'Content-Type': 'application/json'
             },
-            json={'archive_url': archive_url},
+            json=import_payload,
             timeout=TIMEOUT
         )
-        
+
         if import_response.status_code != 200:
             return {
                 'success': False,
@@ -469,8 +523,8 @@ async def clone_endpoint(request: CloneRequest):
     target_username = None
     target_password = None
     
-    # Setup source
-    source_result = await setup_wordpress(
+    # Setup source - Use browser-based setup for better compatibility with bot protection
+    source_result = await setup_wordpress_with_browser(
         str(request.source.url),
         request.source.username,
         request.source.password,
@@ -570,7 +624,10 @@ async def clone_endpoint(request: CloneRequest):
         str(request.source.url),
         source_result['api_key'],
         target_url,
-        target_result['api_key']
+        target_result['api_key'],
+        public_target_url=public_url,
+        admin_user=target_username,
+        admin_password=target_password
     )
     
     if not clone_result.get('success'):

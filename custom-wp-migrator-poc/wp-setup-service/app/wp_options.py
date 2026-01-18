@@ -5,14 +5,14 @@ Handles retrieving and setting WordPress options programmatically.
 """
 
 import re
-import logging
+from loguru import logger
 import time
 from typing import Optional
 from bs4 import BeautifulSoup
 import requests
 
 
-logger = logging.getLogger(__name__)
+
 
 
 class WordPressOptionsFetcher:

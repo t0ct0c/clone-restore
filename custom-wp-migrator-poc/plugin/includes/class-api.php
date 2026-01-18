@@ -7,7 +7,14 @@ if (!defined('ABSPATH')) {
 class Custom_Migrator_API {
     
     public static function init() {
-        add_action('rest_api_init', array(__CLASS__, 'register_routes'));
+        // High priority to ensure we handle the request before WordPress installation check might redirect
+        add_action('rest_api_init', array(__CLASS__, 'register_routes'), 5);
+        
+        // Disable the "WordPress is not installed" redirect for our migration API calls
+        if (isset($_SERVER['REQUEST_URI']) && strpos($_SERVER['REQUEST_URI'], 'custom-migrator/v1') !== false) {
+            add_filter('wp_die_handler', function() { return '__return_null'; });
+            remove_action('admin_init', 'wp_redirect_admin_locations', 1000);
+        }
     }
     
     public static function register_routes() {
@@ -80,6 +87,9 @@ class Custom_Migrator_API {
         
         $archive_url = isset($params['archive_url']) ? $params['archive_url'] : null;
         $archive_path = isset($params['archive_path']) ? $params['archive_path'] : null;
+        $public_url = isset($params['public_url']) ? $params['public_url'] : null;
+        $admin_user = isset($params['admin_user']) ? $params['admin_user'] : null;
+        $admin_password = isset($params['admin_password']) ? $params['admin_password'] : null;
         
         // Check for file upload
         $files = $request->get_file_params();
@@ -102,7 +112,7 @@ class Custom_Migrator_API {
         }
         
         $importer = Custom_Migrator_Importer::get_instance();
-        $result = $importer->import($archive_path, $archive_url);
+        $result = $importer->import($archive_path, $archive_url, $public_url, $admin_user, $admin_password);
         
         if ($result['success']) {
             return new WP_REST_Response($result, 200);

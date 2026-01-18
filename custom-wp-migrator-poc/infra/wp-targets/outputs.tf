@@ -8,3 +8,9 @@ output "ssh_private_key_pem" {
   value       = tls_private_key.wp_targets.private_key_pem
   sensitive   = true
 }
+
+output "mysql_root_password" {
+  description = "MySQL root password for target hosts"
+  value       = random_password.mysql_root.result
+  sensitive   = true
+}

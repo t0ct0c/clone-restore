@@ -4,7 +4,7 @@ AWS EC2 Provisioning Module
 Handles ephemeral WordPress target provisioning on EC2 Auto Scaling with Docker.
 """
 
-import logging
+from loguru import logger
 import time
 import secrets
 import string
@@ -15,7 +15,7 @@ import paramiko
 from botocore.exceptions import ClientError
 
 
-logger = logging.getLogger(__name__)
+
 
 
 class EC2Provisioner:
@@ -31,9 +31,14 @@ class EC2Provisioner:
         self.asg_name = 'wp-targets-asg'
         self.docker_image = '044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest'
         self.alb_dns = 'wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com'
+        self.management_ip = '10.0.4.2' # Private IP of the management host running Loki/Tempo
         self.ssh_key_path = '/app/ssh/wp-targets-key.pem'
         self.port_range_start = 8001
-        self.port_range_end = 8010
+        self.port_range_end = 8050
+        
+        # MySQL root password from environment (set by Terraform output)
+        import os
+        self.mysql_root_password = os.getenv('MYSQL_ROOT_PASSWORD', 'default_insecure_password')
     
     def provision_target(self, customer_id: str, ttl_minutes: int = 30) -> Dict:
         """
@@ -76,15 +81,32 @@ class EC2Provisioner:
                     'message': 'Instance at capacity, scaling up...'
                 }
             
-            # 3. Generate WordPress credentials
+            # 3. Generate WordPress and database credentials
             wp_password = self._generate_password()
+            db_password = self._generate_password()
             
-            # 4. Start Docker container via SSH
+            # 4. Create MySQL database for this WordPress instance
+            db_created = self._create_mysql_database(
+                instance_ip,
+                customer_id,
+                db_password,
+                self.mysql_root_password
+            )
+            
+            if not db_created:
+                return {
+                    'success': False,
+                    'error_code': 'DB_CREATE_FAILED',
+                    'message': 'Failed to create MySQL database'
+                }
+            
+            # 5. Start Docker container via SSH
             container_started = self._start_container(
                 instance_ip,
                 customer_id,
                 port,
-                wp_password
+                wp_password,
+                db_password
             )
             
             if not container_started:
@@ -94,14 +116,14 @@ class EC2Provisioner:
                     'message': 'Failed to start Docker container'
                 }
             
-            # 5. Activate plugin and get API key directly (Bypass Browser)
+            # 6. Activate plugin and get API key directly (Bypass Browser)
             logger.info(f"Activating plugin directly in container {customer_id}...")
             api_key = self._activate_plugin_directly(instance_ip, customer_id)
             
             if not api_key:
                 logger.warning("Failed to activate plugin via CLI, setup may fail")
             
-            # 6. Configure Nginx reverse proxy with path-based routing
+            # 7. Configure Nginx reverse proxy with path-based routing
             path_prefix = f"/{customer_id}"
             nginx_configured = self._configure_nginx(instance_ip, customer_id, port, path_prefix)
             
@@ -114,11 +136,11 @@ class EC2Provisioner:
                     'message': 'Failed to configure Nginx'
                 }
             
-            # 6. Schedule TTL cleanup
+            # 8. Schedule TTL cleanup
             expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
-            self._schedule_cleanup(instance_ip, customer_id, path_prefix, ttl_minutes)
+            self._schedule_cleanup(instance_ip, customer_id, path_prefix, ttl_minutes, db_password)
             
-            # 7. Wait for health check
+            # 9. Wait for health check
             # Use direct instance URL for WordPress setup (authentication)
             direct_url = f"http://{instance_ip}:{port}"
             alb_url = f"http://{self.alb_dns}{path_prefix}"
@@ -151,7 +173,7 @@ class EC2Provisioner:
             }
     
     def _find_least_loaded_instance(self) -> Optional[Dict]:
-        """Find EC2 instance with least containers"""
+        """Find EC2 instance with least containers and scale up if needed"""
         try:
             # Get instances from Auto Scaling Group
             response = self.asg_client.describe_auto_scaling_groups(
@@ -162,29 +184,85 @@ class EC2Provisioner:
                 logger.error(f"Auto Scaling Group {self.asg_name} not found")
                 return None
             
-            instances = response['AutoScalingGroups'][0]['Instances']
+            asg = response['AutoScalingGroups'][0]
+            instances = asg['Instances']
             running_instances = [i for i in instances if i['LifecycleState'] == 'InService']
             
             if not running_instances:
-                logger.error("No running instances in ASG")
+                logger.warning("No running instances in ASG, checking if we can scale from zero")
+                if asg['DesiredCapacity'] == 0:
+                    self.asg_client.update_auto_scaling_group(
+                        AutoScalingGroupName=self.asg_name,
+                        DesiredCapacity=1
+                    )
+                    logger.info("Triggered scale up from zero")
                 return None
             
-            # Get instance details
+            # Get instance details to get IPs
             instance_ids = [i['InstanceId'] for i in running_instances]
             ec2_response = self.ec2_client.describe_instances(InstanceIds=instance_ids)
             
-            # For simplicity, return first available instance
-            # In production, query container count via custom CloudWatch metric
+            candidates = []
             for reservation in ec2_response['Reservations']:
                 for instance in reservation['Instances']:
                     if instance['State']['Name'] == 'running':
-                        return instance
+                        # Count containers on this instance
+                        load = self._get_instance_load(instance.get('PrivateIpAddress'))
+                        candidates.append({
+                            'instance': instance,
+                            'load': load
+                        })
             
-            return None
+            if not candidates:
+                return None
             
-        except ClientError as e:
+            # Sort by load (least containers first)
+            candidates.sort(key=lambda x: x['load'])
+            best_candidate = candidates[0]
+            
+            # If even the least loaded instance is near capacity, trigger scale up
+            max_containers = self.port_range_end - self.port_range_start + 1
+            if best_candidate['load'] >= (max_containers * 0.8):
+                current_desired = asg['DesiredCapacity']
+                if current_desired < asg['MaxSize']:
+                    logger.info(f"Instances near capacity ({best_candidate['load']}/{max_containers}). Scaling up ASG.")
+                    self.asg_client.update_auto_scaling_group(
+                        AutoScalingGroupName=self.asg_name,
+                        DesiredCapacity=current_desired + 1
+                    )
+            
+            return best_candidate['instance']
+            
+        except Exception as e:
             logger.error(f"Failed to find instance: {e}")
             return None
+
+    def _get_instance_load(self, instance_ip: str) -> int:
+        """Count running containers on an instance via SSH"""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=10)
+            
+            # Count running containers (excluding infrastructure ones like 'mysql' or 'loki' if present)
+            # We assume our clone containers have a specific naming pattern or we just count all
+            cmd = "docker ps -q | wc -l"
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            count = int(stdout.read().decode().strip() or 0)
+            
+            # Proactive disk cleanup
+            df_cmd = "df --output=pcent / | tail -1 | tr -dc '0-9'"
+            stdin, stdout, stderr = ssh.exec_command(df_cmd)
+            usage = int(stdout.read().decode().strip() or 0)
+            if usage > 80:
+                logger.info(f"Disk usage on {instance_ip} is {usage}%. Running docker system prune.")
+                ssh.exec_command("docker system prune -f")
+            
+            ssh.close()
+            return count
+        except Exception as e:
+            logger.warning(f"Could not get load for {instance_ip}: {e}")
+            return 999  # Treat as full if unreachable
     
     def _allocate_port(self, instance_ip: str) -> Optional[int]:
         """Allocate next available port on instance by checking running containers"""
@@ -232,7 +310,53 @@ class EC2Provisioner:
         alphabet = string.ascii_letters + string.digits
         return ''.join(secrets.choice(alphabet) for _ in range(length))
     
-    def _start_container(self, instance_ip: str, customer_id: str, port: int, wp_password: str) -> bool:
+    def _create_mysql_database(self, instance_ip: str, customer_id: str, db_password: str, mysql_root_password: str) -> bool:
+        """Create MySQL database and user for WordPress instance"""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            ssh.connect(
+                instance_ip,
+                username='ec2-user',
+                key_filename=self.ssh_key_path,
+                timeout=30
+            )
+            
+            # Sanitize customer_id for database name (replace hyphens with underscores)
+            db_name = f"wp_{customer_id.replace('-', '_')}"
+            db_user = db_name
+            
+            # Create database and user via MySQL CLI
+            mysql_commands = (
+                f"CREATE DATABASE IF NOT EXISTS {db_name}; "
+                f"CREATE USER IF NOT EXISTS '{db_user}'@'%' IDENTIFIED BY '{db_password}'; "
+                f"GRANT ALL PRIVILEGES ON {db_name}.* TO '{db_user}'@'%'; "
+                "FLUSH PRIVILEGES;"
+            )
+            
+            # Execute MySQL commands (escape password for shell)
+            import shlex
+            docker_cmd = f"docker exec mysql mysql -uroot -p{shlex.quote(mysql_root_password)} -e {shlex.quote(mysql_commands)}"
+            
+            stdin, stdout, stderr = ssh.exec_command(docker_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            ssh.close()
+            
+            if exit_status == 0:
+                logger.info(f"MySQL database {db_name} created successfully")
+                return True
+            else:
+                error = stderr.read().decode()
+                logger.error(f"MySQL database creation failed: {error}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to create MySQL database: {e}")
+            return False
+    
+    def _start_container(self, instance_ip: str, customer_id: str, port: int, wp_password: str, db_password: str) -> bool:
         """Start Docker container via SSH"""
         try:
             ssh = paramiko.SSHClient()
@@ -260,16 +384,28 @@ class EC2Provisioner:
             
             logger.info("ECR authentication successful")
             
-            # Start single WordPress+SQLite container
-            # Use instance IP for WP_SITE_URL so authentication works
+            # Sanitize customer_id for database name
+            db_name = f"wp_{customer_id.replace('-', '_')}"
+            db_user = db_name
+            
+            # Start WordPress container with MySQL configuration and Loki logging
             docker_cmd = f"""
             docker run -d --pull always \
                 --name {customer_id} \
                 -p {port}:80 \
+                --add-host=host.docker.internal:host-gateway \
+                --log-driver loki \
+                --log-opt loki-url="http://{self.management_ip}:3100/loki/api/v1/push" \
+                --log-opt loki-external-labels="job=wp-migration,container_name={customer_id}" \
+                -e WORDPRESS_DB_HOST=host.docker.internal:3306 \
+                -e WORDPRESS_DB_NAME={db_name} \
+                -e WORDPRESS_DB_USER={db_user} \
+                -e WORDPRESS_DB_PASSWORD={db_password} \
                 -e WP_ADMIN_USER=admin \
                 -e WP_ADMIN_PASSWORD={wp_password} \
                 -e WP_ADMIN_EMAIL=admin@example.com \
                 -e WP_SITE_URL=http://{instance_ip}:{port} \
+                -e WORDPRESS_CONFIG_EXTRA="define('MYSQL_CLIENT_FLAGS', MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT);" \
                 {self.docker_image}
             """
             
@@ -284,13 +420,32 @@ class EC2Provisioner:
             
             logger.info(f"WordPress container {customer_id} started on port {port}")
             
-            # Wait for WordPress to auto-install (happens in background)
-            logger.info("Waiting for WordPress to initialize (this takes ~30 seconds)...")
-            time.sleep(35)
+            # Wait for WordPress and Migrator Plugin to be ready via status endpoint
+            logger.info("Waiting for WordPress and Migrator Plugin to initialize...")
+            ready = False
+            for i in range(20):  # 100 seconds total
+                try:
+                    # Check status via API to ensure plugin is loaded and active
+                    # Use http because it's internal VPC traffic
+                    resp = requests.get(
+                        f"http://{instance_ip}:{port}/wp-json/custom-migrator/v1/status",
+                        headers={'X-Migrator-Key': 'migration-master-key'},
+                        timeout=5
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get('import_allowed'):
+                            logger.info(f"WordPress and Migrator Plugin ready on port {port}")
+                            ready = True
+                            break
+                except Exception:
+                    pass
+                time.sleep(5)
+            
+            if not ready:
+                logger.warning(f"WordPress might not be fully ready on port {port}, proceeding anyway...")
             
             ssh.close()
-            
-            logger.info(f"WordPress ready with admin user on port {port}")
             return True
                 
         except Exception as e:
@@ -318,6 +473,7 @@ location {path_prefix}/ {{
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Prefix {path_prefix};
     
     # Rewrite redirects
@@ -348,8 +504,8 @@ location {path_prefix}/ {{
             logger.error(f"Nginx configuration failed: {e}")
             return False
     
-    def _schedule_cleanup(self, instance_ip: str, customer_id: str, path_prefix: str, ttl_minutes: int):
-        """Schedule container cleanup via cron"""
+    def _schedule_cleanup(self, instance_ip: str, customer_id: str, path_prefix: str, ttl_minutes: int, db_password: str):
+        """Schedule container and database cleanup via cron"""
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -361,11 +517,22 @@ location {path_prefix}/ {{
                 timeout=30
             )
             
-            # Schedule one-time cleanup
+            # Sanitize customer_id for database name
+            db_name = f"wp_{customer_id.replace('-', '_')}"
+            
+            # Schedule one-time cleanup including database drop
+            # Escape MySQL password for shell using single quotes
+            escaped_password = self.mysql_root_password.replace("'", "'\\''")
             cleanup_script = f"""
             #!/bin/bash
+            # Stop and remove container
             docker stop {customer_id}
             docker rm {customer_id}
+            
+            # Drop MySQL database and user
+            docker exec mysql mysql -uroot -p'{escaped_password}' -e "DROP DATABASE IF EXISTS {db_name}; DROP USER IF EXISTS '{db_name}'@'%';"
+            
+            # Remove Nginx config
             sudo rm -f /etc/nginx/default.d/{customer_id}.conf
             sudo systemctl reload nginx
             """
@@ -381,7 +548,7 @@ location {path_prefix}/ {{
             
             ssh.close()
             
-            logger.info(f"Cleanup scheduled for {customer_id} in {ttl_minutes} minutes")
+            logger.info(f"Cleanup scheduled for {customer_id} in {ttl_minutes} minutes (includes database drop)")
             
         except Exception as e:
             logger.warning(f"Failed to schedule cleanup: {e}")
@@ -448,7 +615,7 @@ location {path_prefix}/ {{
         return False
 
     def _activate_plugin_directly(self, instance_ip: str, customer_id: str) -> Optional[str]:
-        """Activate plugin and get API key directly via docker exec (Bypasses Web UI)"""
+        """Activate plugin and set a fixed API key for the migration phase"""
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -460,69 +627,29 @@ location {path_prefix}/ {{
                 timeout=30
             )
             
-            # PHP snippet to activate plugin and return API key
-            # We use double quotes for the shell command so internal single quotes work
-            php_code = '''
-            require_once("/var/www/html/wp-load.php");
-            include_once(ABSPATH . "wp-admin/includes/plugin.php");
+            # Use a fixed key for the migration setup phase to avoid race conditions
+            fixed_key = "migration-master-key"
             
-            $plugin = "custom-migrator/custom-migrator.php";
-            if (!is_plugin_active($plugin)) {
-                activate_plugin($plugin);
-            }
-            
-            // Ensure API key exists
-            $api_key = get_option("custom_migrator_api_key");
-            if (!$api_key) {
-                $api_key = wp_generate_password(32, false);
-                update_option("custom_migrator_api_key", $api_key);
-            }
-            
-            // FORCE enable import - delete first then add fresh
-            delete_option("custom_migrator_allow_import");
-            add_option("custom_migrator_allow_import", true, "", "yes");
-            
-            // Flush all caches
-            wp_cache_flush();
-            if (function_exists("wp_cache_delete")) {
-                wp_cache_delete("custom_migrator_allow_import", "options");
-                wp_cache_delete("alloptions", "options");
-            }
-            
-            // Verify it was set
-            $verify = get_option("custom_migrator_allow_import");
-            if (!$verify) {
-                // Last resort: direct DB insert
-                global $wpdb;
-                $wpdb->replace(
-                    $wpdb->options,
-                    array("option_name" => "custom_migrator_allow_import", "option_value" => "1", "autoload" => "yes")
-                );
-            }
-            
-            echo $api_key;
-            '''
-            
-            # Use base64 to avoid shell escaping issues with the PHP code
-            import base64
-            encoded_php = base64.b64encode(php_code.encode()).decode()
-            docker_cmd = f"docker exec -u www-data {customer_id} php -r 'eval(base64_decode(\"{encoded_php}\"));'"
-            
-            logger.info(f"Executing direct activation on {customer_id} via base64 PHP...")
-            stdin, stdout, stderr = ssh.exec_command(docker_cmd)
-            api_key = stdout.read().decode().strip()
-            error = stderr.read().decode().strip()
+            # Retry a few times if the container is still installing
+            for attempt in range(3):
+                commands = f"""
+                docker exec -u www-data {customer_id} wp plugin activate custom-migrator --path=/var/www/html
+                docker exec -u www-data {customer_id} wp option update custom_migrator_allow_import 1 --path=/var/www/html
+                docker exec -u www-data {customer_id} wp option update custom_migrator_api_key {fixed_key} --path=/var/www/html
+                """
+                
+                stdin, stdout, stderr = ssh.exec_command(commands)
+                exit_status = stdout.channel.recv_exit_status()
+                
+                if exit_status == 0:
+                    logger.info(f"Direct activation successful with fixed migration key")
+                    ssh.close()
+                    return fixed_key
+                
+                logger.warning(f"Activation attempt {attempt + 1} failed, retrying...")
+                time.sleep(5)
             
             ssh.close()
-            
-            if error and not api_key:
-                logger.error(f"Direct activation failed: {error}")
-                return None
-                
-            if api_key:
-                logger.info(f"Direct activation successful, API key: {api_key[:10]}...")
-                return api_key
-            
             return None
                 
         except Exception as e:

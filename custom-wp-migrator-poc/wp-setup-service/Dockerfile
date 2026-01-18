@@ -25,14 +25,20 @@ RUN apt-get update && apt-get install -y \
     libcairo2 \
     libasound2 \
     libatspi2.0-0 \
+    libgtk-3-0 \
+    libdbus-glib-1-2 \
+    libx11-xcb1 \
+    libxt6 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
-RUN playwright install chromium
+# Install Playwright browsers and Camoufox browser
+RUN playwright install chromium && \
+    python3 -m camoufox fetch
 
 # Copy application code
 COPY app/ ./app/

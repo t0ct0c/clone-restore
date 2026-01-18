@@ -6,13 +6,13 @@ or cookie-based login as fallback.
 """
 
 import re
-import logging
+from loguru import logger
 from typing import Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
 
 
-logger = logging.getLogger(__name__)
+
 
 
 class WordPressAuthenticator:
@@ -22,7 +22,7 @@ class WordPressAuthenticator:
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'WP-Setup-Service/1.0'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
     
     def authenticate(self, username: str, password: str) -> bool:
@@ -193,6 +193,11 @@ class WordPressAuthenticator:
             logger.info(f"Nonce page response status: {response.status_code}")
             logger.info(f"Final URL after redirects: {response.url}")
             
+            # Check if redirected to login page (authentication expired)
+            if 'wp-login.php' in response.url:
+                logger.error(f"Redirected to login page, session expired or invalid")
+                return None
+            
             if response.status_code != 200:
                 logger.error(f"Failed to get nonce page, status: {response.status_code}")
                 return None
@@ -203,25 +208,47 @@ class WordPressAuthenticator:
             if action == 'activate-plugin' and plugin_path:
                 # Find activation link for this plugin
                 import urllib.parse
-                activate_link = soup.find('a', href=re.compile(f'action=activate.*plugin={re.escape(urllib.parse.quote(plugin_path))}'))
-                if activate_link:
-                    href = activate_link.get('href')
-                    nonce_match = re.search(r'_wpnonce=([a-f0-9]+)', href)
-                    if nonce_match:
-                        logger.info(f"Found activation nonce from link: {nonce_match.group(1)[:10]}...")
-                        return nonce_match.group(1)
+                plugin_slug = plugin_path.split('/')[0]
+                
+                # Try multiple regex patterns to match the activation link
+                patterns = [
+                    # Exact match with quoted path
+                    f'action=activate.*plugin={re.escape(urllib.parse.quote(plugin_path))}',
+                    # Match with slug
+                    f'action=activate.*plugin={re.escape(plugin_slug)}',
+                    # Match with unquoted path
+                    f'action=activate.*plugin={re.escape(plugin_path)}'
+                ]
+                
+                for pattern in patterns:
+                    activate_link = soup.find('a', href=re.compile(pattern))
+                    if activate_link:
+                        href = activate_link.get('href')
+                        nonce_match = re.search(r'_wpnonce=([a-f0-9]+)', href)
+                        if nonce_match:
+                            logger.info(f"Found activation nonce from link using pattern '{pattern}': {nonce_match.group(1)[:10]}...")
+                            return nonce_match.group(1)
             
             # For deactivation, look for the specific plugin's deactivation link
             if action == 'deactivate-plugin' and plugin_path:
                 # Find deactivation link for this plugin
                 import urllib.parse
-                deactivate_link = soup.find('a', href=re.compile(f'action=deactivate.*plugin={re.escape(urllib.parse.quote(plugin_path))}'))
-                if deactivate_link:
-                    href = deactivate_link.get('href')
-                    nonce_match = re.search(r'_wpnonce=([a-f0-9]+)', href)
-                    if nonce_match:
-                        logger.info(f"Found deactivation nonce from link: {nonce_match.group(1)[:10]}...")
-                        return nonce_match.group(1)
+                plugin_slug = plugin_path.split('/')[0]
+                
+                patterns = [
+                    f'action=deactivate.*plugin={re.escape(urllib.parse.quote(plugin_path))}',
+                    f'action=deactivate.*plugin={re.escape(plugin_slug)}',
+                    f'action=deactivate.*plugin={re.escape(plugin_path)}'
+                ]
+                
+                for pattern in patterns:
+                    deactivate_link = soup.find('a', href=re.compile(pattern))
+                    if deactivate_link:
+                        href = deactivate_link.get('href')
+                        nonce_match = re.search(r'_wpnonce=([a-f0-9]+)', href)
+                        if nonce_match:
+                            logger.info(f"Found deactivation nonce from link using pattern '{pattern}': {nonce_match.group(1)[:10]}...")
+                            return nonce_match.group(1)
             
             # Look for nonce in various forms
             nonce_input = soup.find('input', {'name': '_wpnonce'})

@@ -36,10 +36,11 @@ echo "Step 2: Saving Docker image as tar..."
 docker save ${IMAGE_NAME}:latest -o /tmp/${IMAGE_NAME}.tar
 
 echo ""
-echo "Step 3: Getting VPC and subnet information from Terraform..."
+echo "Step 3: Getting VPC, subnet and MySQL information from Terraform..."
 cd infra/wp-targets
 VPC_ID=$(terraform output -json | jq -r '.vpc_id.value // empty')
 SUBNET_ID=$(terraform output -json | jq -r '.public_subnet_ids.value[0] // empty')
+MYSQL_ROOT_PASSWORD=$(terraform output -raw mysql_root_password)
 SSH_KEY_NAME="wp-targets-key"
 
 # If VPC not in outputs, query it
@@ -230,6 +231,7 @@ sudo docker run -d \
   -p ${SERVICE_PORT}:8000 \
   -v /app/ssh:/app/ssh:ro \
   -e AWS_DEFAULT_REGION=${REGION} \
+  -e MYSQL_ROOT_PASSWORD='${MYSQL_ROOT_PASSWORD}' \
   ${IMAGE_NAME}:latest
 
 echo "Container started"

@@ -15,12 +15,9 @@ class Custom_Migrator_Importer {
         return self::$instance;
     }
     
-    public function import($archive_path = null, $archive_url = null) {
+    public function import($archive_path = null, $archive_url = null, $target_url_override = null, $admin_user = null, $admin_password = null) {
         try {
             $this->log('Starting import...');
-            
-            // Import check removed for automated provisioning POC
-            // All target instances are ephemeral and designed to receive imports
             
             // Enable maintenance mode
             $this->enable_maintenance_mode();
@@ -39,11 +36,17 @@ class Custom_Migrator_Importer {
             
             // Import database
             $this->log('Importing database...');
-            $this->import_database($extract_dir . '/database.sql');
+            $this->import_database($extract_dir . '/database.sql', $target_url_override);
             
             // Restore files
             $this->log('Restoring files...');
             $this->restore_files($extract_dir . '/wp-content');
+            
+            // Create or update admin user if credentials provided
+            if ($admin_user && $admin_password) {
+                $this->log("Ensuring admin user exists: $admin_user");
+                $this->create_or_update_admin_user($admin_user, $admin_password);
+            }
             
             // Cleanup
             $this->cleanup_temp_dir($extract_dir);
@@ -108,7 +111,7 @@ class Custom_Migrator_Importer {
         return $extract_dir;
     }
     
-    private function import_database($db_file) {
+    private function import_database($db_file, $target_url_override = null) {
         global $wpdb;
         
         if (!file_exists($db_file)) {
@@ -121,27 +124,61 @@ class Custom_Migrator_Importer {
             throw new Exception('Database file is empty');
         }
         
-        // Check if we're on SQLite
-        $is_sqlite = $this->is_sqlite_database();
+        // MySQL: Drop and recreate tables
+        $this->log('Dropping existing tables...');
+        $this->drop_all_tables();
         
-        if ($is_sqlite) {
-            // SQLite: Clear existing data but keep table structure
-            $this->log('SQLite detected - clearing existing data...');
-            $this->truncate_all_tables();
-        } else {
-            // MySQL: Drop and recreate tables
-            $this->log('Dropping existing tables...');
-            $this->drop_all_tables();
+        // Detect table prefix from SQL dump (CRITICAL for site detection)
+        $detected_prefix = $this->detect_prefix_from_sql($sql);
+        if ($detected_prefix) {
+            $this->log("Detected table prefix from source: $detected_prefix");
+            $this->update_wp_config_prefix($detected_prefix);
+            // Refresh wpdb prefix for current request
+            $wpdb->prefix = $detected_prefix;
+            $wpdb->set_prefix($detected_prefix);
+        }
+
+        // Extract old URL before importing (for wp search-replace later)
+        $old_url = $this->extract_url_from_sql($sql, $detected_prefix ? $detected_prefix : 'wp_');
+        if ($old_url) {
+            $this->log("Extracted source URL from database: $old_url");
         }
         
-        // Replace source URLs with target URLs
-        $old_url = $this->extract_url_from_sql($sql);
-        $new_url = get_site_url();
+        // Import the SQL directly
+        $this->log('Executing SQL import...');
+        $this->execute_sql($sql);
+        
+        // Use WP-CLI for search-replace if available (handles serialization)
+        // Use override if provided, otherwise fallback to internal site URL
+        $new_url = $target_url_override ? $target_url_override : get_site_url();
+        $new_url = rtrim($new_url, '/');
         
         if ($old_url && $old_url !== $new_url) {
-            $this->log("Replacing URLs: $old_url -> $new_url");
-            $sql = $this->replace_urls_in_sql($sql, $old_url, $new_url);
+            $this->log("Running WP-CLI search-replace: $old_url -> $new_url");
+            
+            // Run search-replace on all tables. WP-CLI handles serialization correctly.
+            $cmd = "wp search-replace " . escapeshellarg($old_url) . " " . escapeshellarg($new_url) . " --all-tables --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1";
+            exec($cmd, $output, $return_var);
+            
+            if ($return_var !== 0) {
+                $this->log("WP-CLI search-replace failed (code $return_var): " . implode("\n", $output));
+                // Fallback to basic replacement if WP-CLI fails (though less reliable for design)
+                $this->replace_urls_manually($old_url, $new_url);
+            } else {
+                $this->log("WP-CLI search-replace completed successfully.");
+            }
         }
+        
+        // Regenerate Elementor CSS if it exists (CRITICAL for design)
+        $this->log('Checking for Elementor styles...');
+        if (is_dir(WP_PLUGIN_DIR . '/elementor')) {
+            $this->log('Regenerating Elementor CSS...');
+            exec("wp elementor flush-css --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1");
+        }
+    }
+
+    private function execute_sql($sql) {
+        global $wpdb;
         
         // Split into individual queries
         $queries = array_filter(
@@ -153,49 +190,47 @@ class Custom_Migrator_Importer {
         
         // Execute queries
         foreach ($queries as $query) {
-            // On SQLite, skip CREATE TABLE and DROP TABLE statements
-            if ($is_sqlite) {
-                $query_upper = strtoupper(trim($query));
-                if (strpos($query_upper, 'CREATE TABLE') === 0 || 
-                    strpos($query_upper, 'DROP TABLE') === 0 ||
-                    strpos($query_upper, 'ALTER TABLE') === 0) {
-                    continue;
-                }
-            }
-            
             $result = $wpdb->query($query);
-            
             if ($result === false && !empty($wpdb->last_error)) {
                 $this->log('Query warning: ' . $wpdb->last_error);
             }
         }
     }
-    
-    private function is_sqlite_database() {
-        // Check if SQLite database integration plugin is active
-        if (defined('SQLITE_DB_DROPIN_VERSION')) {
-            return true;
-        }
-        // Check for db.php dropin
-        if (file_exists(WP_CONTENT_DIR . '/db.php')) {
-            $db_content = file_get_contents(WP_CONTENT_DIR . '/db.php');
-            if (strpos($db_content, 'sqlite') !== false) {
-                return true;
+
+    private function replace_urls_manually($old_url, $new_url) {
+        global $wpdb;
+        $this->log("Running manual URL replacement: $old_url -> $new_url");
+        $this->log("Using table prefix: {$wpdb->prefix}");
+        
+        // Use current prefix to build table names
+        $prefix = $wpdb->prefix;
+        $tables = array(
+            $prefix . 'options' => array('option_value'),
+            $prefix . 'posts' => array('post_content', 'guid'),
+            $prefix . 'postmeta' => array('meta_value')
+        );
+        
+        foreach ($tables as $table => $columns) {
+            foreach ($columns as $column) {
+                $result = $wpdb->query($wpdb->prepare(
+                    "UPDATE `$table` SET `$column` = REPLACE(`$column`, %s, %s)",
+                    $old_url,
+                    $new_url
+                ));
+                $this->log("Updated $table.$column: $result rows affected");
             }
         }
-        return false;
-    }
-    
-    private function truncate_all_tables() {
-        global $wpdb;
         
-        // Get all WordPress tables
-        $tables = $wpdb->get_col("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '{$wpdb->prefix}%'");
-        
-        foreach ($tables as $table) {
-            $wpdb->query("DELETE FROM `$table`");
-            $this->log("Cleared table: $table");
-        }
+        // Also update siteurl and home directly to be sure
+        $wpdb->query($wpdb->prepare(
+            "UPDATE `{$prefix}options` SET `option_value` = %s WHERE `option_name` = 'siteurl'",
+            $new_url
+        ));
+        $wpdb->query($wpdb->prepare(
+            "UPDATE `{$prefix}options` SET `option_value` = %s WHERE `option_name` = 'home'",
+            $new_url
+        ));
+        $this->log("Explicitly set siteurl and home to: $new_url");
     }
     
     private function drop_all_tables() {
@@ -210,9 +245,50 @@ class Custom_Migrator_Importer {
         }
     }
     
-    private function extract_url_from_sql($sql) {
-        // Extract siteurl from wp_options table
-        if (preg_match("/INSERT INTO [^`]*`wp_options`[^;]*'siteurl'[^']*'([^']+)'/", $sql, $matches)) {
+    private function detect_prefix_from_sql($sql) {
+        // Look for CREATE TABLE or INSERT INTO commands to find the prefix
+        // We look for common tables like users or options
+        if (preg_match("/(?:CREATE TABLE|INSERT INTO)\s+`([^`]+)options`/", $sql, $matches)) {
+            return $matches[1];
+        }
+        return null;
+    }
+
+    private function update_wp_config_prefix($new_prefix) {
+        $config_file = ABSPATH . 'wp-config.php';
+        if (!file_exists($config_file)) return;
+
+        $content = file_get_contents($config_file);
+        
+        // Handle both simple strings and getenv_docker patterns
+        $patterns = [
+            "/\\\$table_prefix\s*=\s*['\"][^\"']*['\"];/",
+            "/\\\$table_prefix\s*=\s*getenv_docker\(['\"]WORDPRESS_TABLE_PREFIX['\"]\s*,\s*['\"][^\"']*['\"]\);/"
+        ];
+        
+        $replacement = "\$table_prefix = '$new_prefix';";
+        
+        $updated = false;
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $content)) {
+                $this->log("Updating wp-config.php table prefix to: $new_prefix (matched pattern)");
+                $content = preg_replace($pattern, $replacement, $content);
+                $updated = true;
+                break;
+            }
+        }
+        
+        if ($updated) {
+            file_put_contents($config_file, $content);
+        } else {
+            $this->log("Warning: Could not find table_prefix definition in wp-config.php to update");
+        }
+    }
+
+    private function extract_url_from_sql($sql, $prefix = 'wp_') {
+        // Extract siteurl from options table using detected prefix
+        $table_name = $prefix . 'options';
+        if (preg_match("/INSERT INTO [^`]*`$table_name`[^;]*'siteurl'[^']*'([^']+)'/", $sql, $matches)) {
             return $matches[1];
         }
         return null;
@@ -237,16 +313,9 @@ class Custom_Migrator_Importer {
         }
         
         $dest_wp_content = WP_CONTENT_DIR;
-        $is_sqlite = $this->is_sqlite_database();
         
-        // Plugins to preserve on SQLite targets (essential for operation)
-        $preserve_plugins = array();
-        if ($is_sqlite) {
-            $preserve_plugins = array(
-                'sqlite-database-integration',
-                'custom-migrator'
-            );
-        }
+        // Preserve custom-migrator plugin
+        $preserve_plugins = array('custom-migrator');
         
         // Backup essential plugins before restore
         $plugin_backups = array();
@@ -260,18 +329,9 @@ class Custom_Migrator_Importer {
             }
         }
         
-        // Also backup db.php dropin for SQLite
-        $db_php_backup = null;
-        if ($is_sqlite && file_exists($dest_wp_content . '/db.php')) {
-            $db_php_backup = sys_get_temp_dir() . '/wp_db_php_backup_' . uniqid();
-            copy($dest_wp_content . '/db.php', $db_php_backup);
-            $this->log('Backed up db.php dropin');
-        }
-        
-        // Restore specific directories
-        $items_to_restore = array('themes', 'plugins', 'uploads');
-        
-        foreach ($items_to_restore as $item) {
+        // Restore themes and plugins (delete first)
+        $items_to_delete = array('themes', 'plugins');
+        foreach ($items_to_delete as $item) {
             $src = $source_wp_content . '/' . $item;
             $dest = $dest_wp_content . '/' . $item;
             
@@ -284,19 +344,20 @@ class Custom_Migrator_Importer {
             }
         }
         
+        // Restore uploads WITHOUT deleting (just overwrite to avoid permission issues)
+        $uploads_src = $source_wp_content . '/uploads';
+        $uploads_dest = $dest_wp_content . '/uploads';
+        if (file_exists($uploads_src)) {
+            $this->log('Copying uploads (overwriting existing files)...');
+            $this->recursive_copy($uploads_src, $uploads_dest);
+        }
+        
         // Restore essential plugins
         foreach ($plugin_backups as $plugin => $backup_path) {
             $plugin_dest = $dest_wp_content . '/plugins/' . $plugin;
             $this->recursive_copy($backup_path, $plugin_dest);
             $this->recursive_delete($backup_path);
             $this->log("Restored essential plugin: $plugin");
-        }
-        
-        // Restore db.php dropin
-        if ($db_php_backup && file_exists($db_php_backup)) {
-            copy($db_php_backup, $dest_wp_content . '/db.php');
-            unlink($db_php_backup);
-            $this->log('Restored db.php dropin');
         }
     }
     
@@ -357,6 +418,83 @@ class Custom_Migrator_Importer {
         }
     }
     
+    private function create_or_update_admin_user($username, $password) {
+        global $wpdb;
+        $this->log("Creating/updating admin user: $username");
+        
+        // We use WP-CLI if available as it's cleaner, otherwise use SQL
+        $cmd = "wp user create " . escapeshellarg($username) . " admin@example.com --user_pass=" . escapeshellarg($password) . " --role=administrator --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1";
+        exec($cmd, $output, $return_var);
+        
+        if ($return_var !== 0) {
+            $this->log("WP-CLI user create failed or user exists, trying update...");
+            $cmd = "wp user update " . escapeshellarg($username) . " --user_pass=" . escapeshellarg($password) . " --role=administrator --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1";
+            exec($cmd, $output, $return_var);
+            
+            if ($return_var !== 0) {
+                $this->log("WP-CLI user update failed: " . implode("\n", $output));
+                $this->log("Attempting manual SQL user update...");
+                $this->manual_user_update($username, $password);
+            } else {
+                $this->log("Admin user updated successfully via WP-CLI.");
+            }
+        } else {
+            $this->log("Admin user created successfully via WP-CLI.");
+        }
+    }
+
+    private function manual_user_update($username, $password) {
+        global $wpdb;
+        $prefix = $wpdb->prefix;
+        
+        // Check if user exists
+        $user = $wpdb->get_row($wpdb->prepare("SELECT ID FROM {$prefix}users WHERE user_login = %s", $username));
+        
+        if ($user) {
+            $user_id = $user->ID;
+            $wpdb->update(
+                "{$prefix}users",
+                array('user_pass' => wp_hash_password($password)),
+                array('ID' => $user_id)
+            );
+            $this->log("Updated existing user ID $user_id password via SQL");
+        } else {
+            // Very basic insert if not exists (ideally should handle meta but administrator role is critical)
+            $wpdb->insert(
+                "{$prefix}users",
+                array(
+                    'user_login' => $username,
+                    'user_pass' => wp_hash_password($password),
+                    'user_email' => 'admin@example.com',
+                    'user_registered' => date('Y-m-d H:i:s'),
+                    'user_status' => 0,
+                    'display_name' => $username
+                )
+            );
+            $user_id = $wpdb->insert_id;
+            
+            // Add capabilities for administrator
+            $caps = serialize(array('administrator' => true));
+            $wpdb->insert(
+                "{$prefix}usermeta",
+                array(
+                    'user_id' => $user_id,
+                    'meta_key' => $prefix . 'capabilities',
+                    'meta_value' => $caps
+                )
+            );
+            $wpdb->insert(
+                "{$prefix}usermeta",
+                array(
+                    'user_id' => $user_id,
+                    'meta_key' => $prefix . 'user_level',
+                    'meta_value' => '10'
+                )
+            );
+            $this->log("Created new admin user ID $user_id via SQL");
+        }
+    }
+
     private function log($message) {
         $upload_dir = wp_upload_dir();
         $log_file = $upload_dir['basedir'] . '/custom-migrator/logs/import.log';

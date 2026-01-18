@@ -13,6 +13,9 @@ systemctl start docker
 systemctl enable docker
 usermod -aG docker ec2-user
 
+# Install Loki Docker driver
+docker plugin install grafana/loki-docker-driver:latest --alias loki --grant-all-permissions
+
 # Install Nginx
 amazon-linux-extras install nginx1 -y
 systemctl start nginx
@@ -71,6 +74,28 @@ mkdir -p /etc/nginx/default.d
 
 # Restart Nginx
 systemctl restart nginx
+
+# Start MySQL container for shared database
+echo "Starting MySQL container..."
+docker run -d \
+  --name mysql \
+  --restart unless-stopped \
+  -e MYSQL_ROOT_PASSWORD='${mysql_root_password}' \
+  -v /var/lib/mysql:/var/lib/mysql \
+  -p 3306:3306 \
+  mysql:8.0 \
+  --default-authentication-plugin=mysql_native_password
+
+# Wait for MySQL to be ready
+echo "Waiting for MySQL to be ready..."
+for i in {1..30}; do
+  if docker exec mysql mysqladmin ping -h localhost -p'${mysql_root_password}' --silent 2>/dev/null; then
+    echo "MySQL is ready"
+    break
+  fi
+  echo "Waiting for MySQL... ($i/30)"
+  sleep 2
+done
 
 # Pull WordPress Docker image
 docker pull ghcr.io/t0ct0c/wordpress-migrator:latest

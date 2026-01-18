@@ -117,8 +117,8 @@ class Custom_Migrator_Exporter {
             throw new Exception('Could not create wp-content directory');
         }
         
-        // Only copy essential items and skip large directories
-        $items_to_copy = array('themes', 'plugins');
+        // Copy essential items including uploads
+        $items_to_copy = array('themes', 'plugins', 'uploads');
         
         foreach ($items_to_copy as $item) {
             $src = $wp_content_src . '/' . $item;
@@ -130,10 +130,6 @@ class Custom_Migrator_Exporter {
                 exec("cp -r " . escapeshellarg($src) . " " . escapeshellarg($dest));
             }
         }
-        
-        // Create uploads directory but don't copy files for POC
-        mkdir($wp_content_dest . '/uploads', 0755, true);
-        $this->log('Skipping uploads for POC');
     }
     
     private function recursive_copy($src, $dest) {

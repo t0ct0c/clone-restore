@@ -6,18 +6,13 @@ RUN apt-get update && apt-get install -y \
     wget \
     unzip \
     sudo \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install WP-CLI
 RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
     && chmod +x wp-cli.phar \
     && mv wp-cli.phar /usr/local/bin/wp
-
-# Download SQLite Integration plugin
-RUN cd /tmp && \
-    wget https://downloads.wordpress.org/plugin/sqlite-database-integration.2.1.13.zip && \
-    unzip sqlite-database-integration.2.1.13.zip && \
-    rm sqlite-database-integration.2.1.13.zip
 
 # Copy custom migrator plugin
 COPY plugin /tmp/custom-migrator

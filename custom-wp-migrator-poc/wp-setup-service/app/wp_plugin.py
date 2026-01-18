@@ -4,7 +4,7 @@ WordPress Plugin Installation Module
 Handles uploading and activating WordPress plugins programmatically.
 """
 
-import logging
+from loguru import logger
 import os
 from typing import Optional
 from bs4 import BeautifulSoup
@@ -12,7 +12,7 @@ import requests
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 
-logger = logging.getLogger(__name__)
+
 
 
 class WordPressPluginInstaller:
@@ -212,10 +212,13 @@ class WordPressPluginInstaller:
                     if error_msg:
                         logger.error(f"Activation error: {error_msg.get_text(strip=True)}")
                     else:
-                        logger.error(f"Unknown activation error in response")
+                        logger.error(f"Unknown activation error in response (first 200 chars): {response.text[:200]}")
                     return (False, None)
             
-            logger.error(f"Plugin activation failed with status {response.status_code}")
+            if response.status_code == 403:
+                logger.error(f"Plugin activation failed with status 403 (Forbidden). Response body snippet: {response.text[:500]}")
+            else:
+                logger.error(f"Plugin activation failed with status {response.status_code}")
             return (False, None)
             
         except Exception as e:
@@ -307,16 +310,16 @@ class WordPressPluginInstaller:
                 
                 # Login
                 logger.info(f"Browser: Navigating to login page...")
-                await page.goto(f"{self.base_url}/wp-login.php", timeout=30000)
+                await page.goto(f"{self.base_url}/wp-login.php", timeout=60000)
                 await page.fill('#user_login', username)
                 await page.fill('#user_pass', password)
                 await page.click('#wp-submit')
-                await page.wait_for_load_state('networkidle', timeout=30000)
+                await page.wait_for_load_state('networkidle', timeout=60000)
                 
                 # Go to plugins page
                 logger.info(f"Browser: Navigating to plugins page...")
-                await page.goto(f"{self.base_url}/wp-admin/plugins.php", timeout=30000)
-                await page.wait_for_load_state('networkidle', timeout=10000)
+                await page.goto(f"{self.base_url}/wp-admin/plugins.php", timeout=60000)
+                await page.wait_for_load_state('networkidle', timeout=30000)
                 
                 # Find and click the deactivate link
                 plugin_slug = plugin_path.split('/')[0]
@@ -327,7 +330,7 @@ class WordPressPluginInstaller:
                 if await deactivate_link.count() > 0:
                     logger.info(f"Browser: Clicking deactivate link...")
                     await deactivate_link.click()
-                    await page.wait_for_load_state('networkidle', timeout=30000)
+                    await page.wait_for_load_state('networkidle', timeout=60000)
                     
                     page_content = await page.content()
                     if 'Plugin deactivated' in page_content or 'activate' in page_content.lower():
@@ -406,24 +409,28 @@ class WordPressPluginInstaller:
         """
         try:
             async with async_playwright() as p:
+                # Use a more realistic browser setup
                 browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context()
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    viewport={'width': 1280, 'height': 800}
+                )
                 page = await context.new_page()
                 
                 # Login
                 logger.info(f"Browser: Navigating to login page...")
-                await page.goto(f"{self.base_url}/wp-login.php", timeout=30000)
+                await page.goto(f"{self.base_url}/wp-login.php", timeout=60000)
                 await page.fill('#user_login', username)
                 await page.fill('#user_pass', password)
                 await page.click('#wp-submit')
                 
                 # Wait for redirect to admin
-                await page.wait_for_load_state('networkidle', timeout=30000)
+                await page.wait_for_load_state('networkidle', timeout=60000)
                 
                 # Go to plugins page
                 logger.info(f"Browser: Navigating to plugins page...")
-                await page.goto(f"{self.base_url}/wp-admin/plugins.php", timeout=30000)
-                await page.wait_for_load_state('networkidle', timeout=10000)
+                await page.goto(f"{self.base_url}/wp-admin/plugins.php", timeout=60000)
+                await page.wait_for_load_state('networkidle', timeout=30000)
                 
                 # Find and click the activate link for our plugin
                 plugin_slug = plugin_path.split('/')[0]
@@ -459,7 +466,7 @@ class WordPressPluginInstaller:
                 if activate_link:
                     logger.info(f"Browser: Clicking activate link...")
                     await activate_link.click()
-                    await page.wait_for_load_state('networkidle', timeout=30000)
+                    await page.wait_for_load_state('networkidle', timeout=60000)
                     
                     # Check if activation was successful
                     page_content = await page.content()
@@ -468,8 +475,8 @@ class WordPressPluginInstaller:
                         
                         # Navigate to settings page to extract API key
                         logger.info("Browser: Navigating to plugin settings to extract API key...")
-                        await page.goto(f"{self.base_url}/wp-admin/options-general.php?page=custom-migrator-settings", timeout=30000)
-                        await page.wait_for_load_state('networkidle', timeout=10000)
+                        await page.goto(f"{self.base_url}/wp-admin/options-general.php?page=custom-migrator-settings", timeout=60000)
+                        await page.wait_for_load_state('networkidle', timeout=30000)
                         
                         # Wait a moment for API key to be generated
                         await page.wait_for_timeout(2000)

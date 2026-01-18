@@ -3,7 +3,7 @@
  * Plugin Name: Custom WP Migrator
  * Description: HTTP-based WordPress migration tool for automated cloning
  * Version: 1.0.0
- * Author: Custom Dev
+ * Author: charles
  */
 
 if (!defined('ABSPATH')) {

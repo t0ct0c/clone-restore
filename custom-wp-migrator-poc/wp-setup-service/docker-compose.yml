@@ -12,8 +12,10 @@ services:
       - PLUGIN_ZIP_PATH=/app/plugin.zip
       - TIMEOUT=120
       - LOG_LEVEL=info
+      - MYSQL_ROOT_PASSWORD=r]s@3{wClRz5X&sJ7+?_6@dIXz!}s&D:
     volumes:
       - ../custom-wp-migrator-plugin.zip:/app/plugin.zip:ro
+      - ../wp-targets-key.pem:/app/ssh/wp-targets-key.pem:ro
     networks:
       - wp_migration_net
     healthcheck:
