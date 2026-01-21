@@ -13,9 +13,8 @@ from typing import Optional, Dict
 import boto3
 import paramiko
 from botocore.exceptions import ClientError
-
-
-
+import requests
+import shlex
 
 
 class EC2Provisioner:
@@ -39,17 +38,15 @@ class EC2Provisioner:
         # MySQL root password from environment (set by Terraform output)
         import os
         self.mysql_root_password = os.getenv('MYSQL_ROOT_PASSWORD', 'default_insecure_password')
+        
+        # FIX: Remove accidental backslashes that some shell environments add before exclamation marks
+        if "\\!" in self.mysql_root_password:
+            logger.info("Sanitizing MySQL root password (removing accidental backslashes)")
+            self.mysql_root_password = self.mysql_root_password.replace("\\!", "!")
     
     def provision_target(self, customer_id: str, ttl_minutes: int = 30) -> Dict:
         """
         Provision ephemeral WordPress target
-        
-        Args:
-            customer_id: Unique customer identifier
-            ttl_minutes: Time-to-live in minutes
-        
-        Returns:
-            Dict with target details
         """
         try:
             logger.info(f"Provisioning target for customer {customer_id}")
@@ -65,7 +62,6 @@ class EC2Provisioner:
                 }
             
             instance_id = instance['InstanceId']
-            # Use private IP for inter-VPC communication
             instance_ip = instance.get('PrivateIpAddress')
             public_ip = instance.get('PublicIpAddress')
             
@@ -136,12 +132,15 @@ class EC2Provisioner:
                     'message': 'Failed to configure Nginx'
                 }
             
-            # 8. Schedule TTL cleanup
+            # 8. Reload Apache in the container to ensure it picks up any config changes and resets connections
+            logger.info("Reloading Apache in container to ensure clean state...")
+            self.reload_apache_in_container(instance_ip, customer_id)
+            
+            # 9. Schedule TTL cleanup
             expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
             self._schedule_cleanup(instance_ip, customer_id, path_prefix, ttl_minutes, db_password)
             
             # 9. Wait for health check
-            # Use direct instance URL for WordPress setup (authentication)
             direct_url = f"http://{instance_ip}:{port}"
             alb_url = f"http://{self.alb_dns}{path_prefix}"
             
@@ -152,16 +151,16 @@ class EC2Provisioner:
             
             return {
                 'success': True,
-                'target_url': direct_url,  # Direct URL for WordPress setup
-                'public_url': alb_url,     # ALB URL for user access
+                'target_url': direct_url,
+                'public_url': alb_url,
                 'wordpress_username': 'admin',
                 'wordpress_password': wp_password,
-                'api_key': api_key,        # Return the API key we extracted
+                'api_key': api_key,
                 'expires_at': expires_at.isoformat() + 'Z',
                 'status': 'running',
                 'message': 'Target provisioned successfully',
-                'instance_ip': instance_ip,  # For Apache reload after import
-                'customer_id': customer_id   # Container name for Apache reload
+                'instance_ip': instance_ip,
+                'customer_id': customer_id
             }
             
         except Exception as e:
@@ -175,7 +174,6 @@ class EC2Provisioner:
     def _find_least_loaded_instance(self) -> Optional[Dict]:
         """Find EC2 instance with least containers and scale up if needed"""
         try:
-            # Get instances from Auto Scaling Group
             response = self.asg_client.describe_auto_scaling_groups(
                 AutoScalingGroupNames=[self.asg_name]
             )
@@ -195,10 +193,8 @@ class EC2Provisioner:
                         AutoScalingGroupName=self.asg_name,
                         DesiredCapacity=1
                     )
-                    logger.info("Triggered scale up from zero")
                 return None
             
-            # Get instance details to get IPs
             instance_ids = [i['InstanceId'] for i in running_instances]
             ec2_response = self.ec2_client.describe_instances(InstanceIds=instance_ids)
             
@@ -206,7 +202,6 @@ class EC2Provisioner:
             for reservation in ec2_response['Reservations']:
                 for instance in reservation['Instances']:
                     if instance['State']['Name'] == 'running':
-                        # Count containers on this instance
                         load = self._get_instance_load(instance.get('PrivateIpAddress'))
                         candidates.append({
                             'instance': instance,
@@ -216,16 +211,13 @@ class EC2Provisioner:
             if not candidates:
                 return None
             
-            # Sort by load (least containers first)
             candidates.sort(key=lambda x: x['load'])
             best_candidate = candidates[0]
             
-            # If even the least loaded instance is near capacity, trigger scale up
             max_containers = self.port_range_end - self.port_range_start + 1
             if best_candidate['load'] >= (max_containers * 0.8):
                 current_desired = asg['DesiredCapacity']
                 if current_desired < asg['MaxSize']:
-                    logger.info(f"Instances near capacity ({best_candidate['load']}/{max_containers}). Scaling up ASG.")
                     self.asg_client.update_auto_scaling_group(
                         AutoScalingGroupName=self.asg_name,
                         DesiredCapacity=current_desired + 1
@@ -244,8 +236,6 @@ class EC2Provisioner:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=10)
             
-            # Count running containers (excluding infrastructure ones like 'mysql' or 'loki' if present)
-            # We assume our clone containers have a specific naming pattern or we just count all
             cmd = "docker ps -q | wc -l"
             stdin, stdout, stderr = ssh.exec_command(cmd)
             count = int(stdout.read().decode().strip() or 0)
@@ -262,47 +252,33 @@ class EC2Provisioner:
             return count
         except Exception as e:
             logger.warning(f"Could not get load for {instance_ip}: {e}")
-            return 999  # Treat as full if unreachable
+            return 999
     
     def _allocate_port(self, instance_ip: str) -> Optional[int]:
         """Allocate next available port on instance by checking running containers"""
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
-            # Get list of ports already in use by Docker containers
             cmd = "docker ps --format '{{.Ports}}' | grep -oP '0.0.0.0:\\K[0-9]+' | sort -n"
             stdin, stdout, stderr = ssh.exec_command(cmd)
             used_ports_output = stdout.read().decode().strip()
             
             ssh.close()
             
-            # Parse used ports
             used_ports = set()
             if used_ports_output:
                 used_ports = set(int(p) for p in used_ports_output.split('\n') if p)
             
-            logger.info(f"Ports in use on {instance_ip}: {used_ports}")
-            
-            # Find first available port in range
             for port in range(self.port_range_start, self.port_range_end + 1):
                 if port not in used_ports:
-                    logger.info(f"Allocated port {port}")
                     return port
             
-            logger.error("All ports in range are in use")
             return None
             
         except Exception as e:
             logger.error(f"Failed to allocate port: {e}")
-            # Fallback to first port if we can't check
             return self.port_range_start
     
     def _generate_password(self, length: int = 16) -> str:
@@ -315,19 +291,11 @@ class EC2Provisioner:
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
-            # Sanitize customer_id for database name (replace hyphens with underscores)
             db_name = f"wp_{customer_id.replace('-', '_')}"
             db_user = db_name
             
-            # Create database and user via MySQL CLI
             mysql_commands = (
                 f"CREATE DATABASE IF NOT EXISTS {db_name}; "
                 f"CREATE USER IF NOT EXISTS '{db_user}'@'%' IDENTIFIED BY '{db_password}'; "
@@ -335,9 +303,7 @@ class EC2Provisioner:
                 "FLUSH PRIVILEGES;"
             )
             
-            # Execute MySQL commands (escape password for shell)
-            import shlex
-            docker_cmd = f"docker exec mysql mysql -uroot -p{shlex.quote(mysql_root_password)} -e {shlex.quote(mysql_commands)}"
+            docker_cmd = f"docker exec -e MYSQL_PWD={shlex.quote(mysql_root_password)} mysql mysql -uroot -e {shlex.quote(mysql_commands)}"
             
             stdin, stdout, stderr = ssh.exec_command(docker_cmd)
             exit_status = stdout.channel.recv_exit_status()
@@ -345,7 +311,6 @@ class EC2Provisioner:
             ssh.close()
             
             if exit_status == 0:
-                logger.info(f"MySQL database {db_name} created successfully")
                 return True
             else:
                 error = stderr.read().decode()
@@ -361,34 +326,14 @@ class EC2Provisioner:
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             
-            # Connect to EC2 instance
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
-            # Authenticate Docker with ECR
-            logger.info("Authenticating with ECR...")
             ecr_login_cmd = "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 044514005641.dkr.ecr.us-east-1.amazonaws.com"
-            stdin, stdout, stderr = ssh.exec_command(ecr_login_cmd)
-            ecr_status = stdout.channel.recv_exit_status()
+            ssh.exec_command(ecr_login_cmd)
             
-            if ecr_status != 0:
-                error = stderr.read().decode()
-                logger.error(f"ECR login failed: {error}")
-                ssh.close()
-                return False
-            
-            logger.info("ECR authentication successful")
-            
-            # Sanitize customer_id for database name
             db_name = f"wp_{customer_id.replace('-', '_')}"
             db_user = db_name
             
-            # Start WordPress container with MySQL configuration and Loki logging
             docker_cmd = f"""
             docker run -d --pull always \
                 --name {customer_id} \
@@ -405,6 +350,7 @@ class EC2Provisioner:
                 -e WP_ADMIN_PASSWORD={wp_password} \
                 -e WP_ADMIN_EMAIL=admin@example.com \
                 -e WP_SITE_URL=http://{instance_ip}:{port} \
+                -e WP_SUBPATH=/{customer_id} \
                 -e WORDPRESS_CONFIG_EXTRA="define('MYSQL_CLIENT_FLAGS', MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT);" \
                 {self.docker_image}
             """
@@ -413,37 +359,24 @@ class EC2Provisioner:
             exit_status = stdout.channel.recv_exit_status()
             
             if exit_status != 0:
-                error = stderr.read().decode()
-                logger.error(f"WordPress start failed: {error}")
                 ssh.close()
                 return False
             
-            logger.info(f"WordPress container {customer_id} started on port {port}")
-            
-            # Wait for WordPress and Migrator Plugin to be ready via status endpoint
-            logger.info("Waiting for WordPress and Migrator Plugin to initialize...")
+            # Wait for WordPress and Migrator Plugin
             ready = False
-            for i in range(20):  # 100 seconds total
+            for i in range(20):
                 try:
-                    # Check status via API to ensure plugin is loaded and active
-                    # Use http because it's internal VPC traffic
                     resp = requests.get(
                         f"http://{instance_ip}:{port}/wp-json/custom-migrator/v1/status",
                         headers={'X-Migrator-Key': 'migration-master-key'},
                         timeout=5
                     )
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        if data.get('import_allowed'):
-                            logger.info(f"WordPress and Migrator Plugin ready on port {port}")
-                            ready = True
-                            break
+                    if resp.status_code == 200 and resp.json().get('import_allowed'):
+                        ready = True
+                        break
                 except Exception:
                     pass
                 time.sleep(5)
-            
-            if not ready:
-                logger.warning(f"WordPress might not be fully ready on port {port}, proceeding anyway...")
             
             ssh.close()
             return True
@@ -457,51 +390,66 @@ class EC2Provisioner:
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             
             # Create Nginx config for path-based routing
+            # This version preserves the prefix so the backend can handle it correctly
             nginx_config = f"""
-location {path_prefix}/ {{
-    proxy_pass http://localhost:{port}/;
+location {path_prefix} {{
+    proxy_pass http://localhost:{port};
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    
+    # Handle protocol forwarding
+    set $fixed_proto $scheme;
+    if ($http_x_forwarded_proto != "") {{
+        set $fixed_proto $http_x_forwarded_proto;
+    }}
+    proxy_set_header X-Forwarded-Proto $fixed_proto;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Prefix {path_prefix};
     
-    # Rewrite redirects
-    proxy_redirect / {path_prefix}/;
+    # Use HTTP 1.1 for better connection handling
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    
+    # Disable compression from backend
+    proxy_set_header Accept-Encoding "";
+    gzip off;
+    
+    # Buffers for WordPress admin
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+    proxy_busy_buffers_size 256k;
+    
+    # Increase timeouts for large imports
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    
+    # Buffering on is usually safer for header processing
+    proxy_buffering on;
 }}
 """
             
-            # Write config to main nginx conf and reload
             commands = f"""
-            echo '{nginx_config}' | sudo tee /etc/nginx/default.d/{customer_id}.conf
-            sudo nginx -t && sudo systemctl reload nginx
-            """
+sudo tee /etc/nginx/default.d/{customer_id}.conf << 'EOF'
+{nginx_config}
+EOF
+sudo nginx -t && sudo systemctl reload nginx
+"""
             
             stdin, stdout, stderr = ssh.exec_command(commands)
             exit_status = stdout.channel.recv_exit_status()
-            
             ssh.close()
             
             if exit_status == 0:
-                logger.info(f"Nginx configured for path {path_prefix}")
                 return True
             else:
-                error = stderr.read().decode()
-                logger.error(f"Nginx config failed: {error}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Nginx configuration failed: {e}")
+            logger.error(f"Nginx configuration exception: {e}")
             return False
     
     def _schedule_cleanup(self, instance_ip: str, customer_id: str, path_prefix: str, ttl_minutes: int, db_password: str):
@@ -509,30 +457,15 @@ location {path_prefix}/ {{
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
-            # Sanitize customer_id for database name
             db_name = f"wp_{customer_id.replace('-', '_')}"
-            
-            # Schedule one-time cleanup including database drop
-            # Escape MySQL password for shell using single quotes
             escaped_password = self.mysql_root_password.replace("'", "'\\''")
             cleanup_script = f"""
             #!/bin/bash
-            # Stop and remove container
             docker stop {customer_id}
             docker rm {customer_id}
-            
-            # Drop MySQL database and user
-            docker exec mysql mysql -uroot -p'{escaped_password}' -e "DROP DATABASE IF EXISTS {db_name}; DROP USER IF EXISTS '{db_name}'@'%';"
-            
-            # Remove Nginx config
+            docker exec -e MYSQL_PWD='{escaped_password}' mysql mysql -uroot -e "DROP DATABASE IF EXISTS {db_name}; DROP USER IF EXISTS '{db_name}'@'%';"
             sudo rm -f /etc/nginx/default.d/{customer_id}.conf
             sudo systemctl reload nginx
             """
@@ -542,66 +475,37 @@ location {path_prefix}/ {{
             chmod +x /tmp/cleanup_{customer_id}.sh
             echo "/tmp/cleanup_{customer_id}.sh" | at now + {ttl_minutes} minutes
             """
-            
-            stdin, stdout, stderr = ssh.exec_command(commands)
-            stdout.channel.recv_exit_status()
-            
+            ssh.exec_command(commands)
             ssh.close()
-            
-            logger.info(f"Cleanup scheduled for {customer_id} in {ttl_minutes} minutes (includes database drop)")
-            
-        except Exception as e:
-            logger.warning(f"Failed to schedule cleanup: {e}")
+        except Exception:
+            pass
     
     def _stop_container(self, instance_ip: str, customer_id: str):
         """Stop and remove container"""
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             ssh.exec_command(f"docker stop {customer_id} && docker rm {customer_id}")
             ssh.close()
-            
-        except Exception as e:
-            logger.error(f"Failed to stop container: {e}")
+        except Exception:
+            pass
     
     def reload_apache_in_container(self, instance_ip: str, customer_id: str):
         """Reload Apache inside container to reset database connections after import"""
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
-            # Reload Apache to reset all database connections
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             docker_cmd = f"sudo docker exec {customer_id} service apache2 reload"
-            stdin, stdout, stderr = ssh.exec_command(docker_cmd)
-            stdout.read()  # Wait for completion
-            
+            ssh.exec_command(docker_cmd)
             ssh.close()
-            logger.info(f"Apache reloaded in container {customer_id}")
             return True
-            
-        except Exception as e:
-            logger.warning(f"Failed to reload Apache in container: {e}")
+        except Exception:
             return False
     
     def _wait_for_health(self, url: str, timeout: int = 30) -> bool:
         """Wait for WordPress to be healthy"""
-        import requests
-        
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
@@ -611,7 +515,6 @@ location {path_prefix}/ {{
             except Exception:
                 pass
             time.sleep(2)
-        
         return False
 
     def _activate_plugin_directly(self, instance_ip: str, customer_id: str) -> Optional[str]:
@@ -619,39 +522,20 @@ location {path_prefix}/ {{
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
-            ssh.connect(
-                instance_ip,
-                username='ec2-user',
-                key_filename=self.ssh_key_path,
-                timeout=30
-            )
-            
-            # Use a fixed key for the migration setup phase to avoid race conditions
+            ssh.connect(instance_ip, username='ec2-user', key_filename=self.ssh_key_path, timeout=30)
             fixed_key = "migration-master-key"
-            
-            # Retry a few times if the container is still installing
             for attempt in range(3):
                 commands = f"""
                 docker exec -u www-data {customer_id} wp plugin activate custom-migrator --path=/var/www/html
                 docker exec -u www-data {customer_id} wp option update custom_migrator_allow_import 1 --path=/var/www/html
                 docker exec -u www-data {customer_id} wp option update custom_migrator_api_key {fixed_key} --path=/var/www/html
                 """
-                
                 stdin, stdout, stderr = ssh.exec_command(commands)
-                exit_status = stdout.channel.recv_exit_status()
-                
-                if exit_status == 0:
-                    logger.info(f"Direct activation successful with fixed migration key")
+                if stdout.channel.recv_exit_status() == 0:
                     ssh.close()
                     return fixed_key
-                
-                logger.warning(f"Activation attempt {attempt + 1} failed, retrying...")
                 time.sleep(5)
-            
             ssh.close()
             return None
-                
-        except Exception as e:
-            logger.error(f"Direct activation exception: {e}")
+        except Exception:
             return None
