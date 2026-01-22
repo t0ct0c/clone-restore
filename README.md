@@ -16,32 +16,32 @@ No one needs to log into servers or manually install plugins; the system behaves
 
 ```mermaid
 graph TD
-    A[User or External Tool] --> B[Web UI / API Service]
+    A["User or external tool"] --> B["Web UI / API service"]
 
-    subgraph Management Plane
-        B[Web UI / API Service]
-        C[Clone & Restore Orchestrator]
-        D[Browser Automation Engine]
-        E[EC2 Provisioner]
-        F[Observability Stack<br/>(Logs & Traces)]
+    subgraph "Management Plane"
+        B
+        C["Clone and restore orchestrator"]
+        D["Browser automation engine"]
+        E["EC2 provisioner"]
+        F["Observability stack (logs and traces)"]
     end
 
-    subgraph Source Side
-        G[Live WordPress Site]
-        H[Migration Plugin on Source]
+    subgraph "Source Side"
+        G["Live WordPress site"]
+        H["Migration plugin on source"]
     end
 
-    subgraph Target Side
-        I[AWS Auto Scaling Group<br/>for Target Hosts]
-        J[Per-Customer WordPress Clone<br/>(Container + Plugin)]
-        K[Shared MySQL Database Server]
-        L[Reverse Proxy / Load Balancer]
+    subgraph "Target Side"
+        I["AWS Auto Scaling Group for target hosts"]
+        J["Per-customer WordPress clone (container + plugin)"]
+        K["Shared MySQL database server"]
+        L["Reverse proxy / load balancer"]
     end
 
-    subgraph Safety Layer
-        M[Safe-Restore Logic]
-        N[Temporary Plugin Backup on Target]
-        O[Integrity Checks<br/>(Plugins & Themes)]
+    subgraph "Safety Layer"
+        M["Safe-restore logic"]
+        N["Temporary plugin backup on target"]
+        O["Integrity checks (plugins and themes)"]
     end
 
     B --> C
