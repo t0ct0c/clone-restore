@@ -130,6 +130,101 @@ Clone a site from source to an ephemeral target.
 
 ---
 
+### `POST /restore`
+
+**NEW**: Restore content from staging/backup to production with selective preservation.
+
+This endpoint is designed for the workflow: Clone production→staging → Edit staging → Restore staging→production.
+
+#### Key Features
+- **Preserves production plugins** by default (prevents plugin downgrades)
+- **Restores themes** from staging (deploys design changes)
+- **Restores database and uploads** (content and media)
+- **Integrity verification** (warns about missing plugins/themes)
+
+#### Request Body
+```json
+{
+  "source": {
+    "url": "https://staging.yoursite.com",
+    "username": "admin",
+    "password": "staging_pass"
+  },
+  "target": {
+    "url": "https://yoursite.com",
+    "username": "admin",
+    "password": "production_pass"
+  },
+  "preserve_plugins": true,
+  "preserve_themes": false
+}
+```
+
+#### Request Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `source` | object | required | Staging/backup WordPress credentials |
+| `target` | object | required | Production WordPress credentials |
+| `preserve_plugins` | boolean | `true` | Keep production plugins (recommended) |
+| `preserve_themes` | boolean | `false` | Keep production themes (not recommended) |
+
+#### Response (Success)
+```json
+{
+  "success": true,
+  "message": "Restore completed successfully",
+  "source_api_key": "source-key-abc123",
+  "target_api_key": "target-key-def456",
+  "integrity": {
+    "status": "healthy",
+    "warnings": []
+  },
+  "options": {
+    "preserve_plugins": true,
+    "preserve_themes": false
+  }
+}
+```
+
+#### Response (With Warnings)
+```json
+{
+  "success": true,
+  "message": "Restore completed successfully",
+  "integrity": {
+    "status": "warnings",
+    "warnings": [
+      "Active plugin not found: old-plugin/old-plugin.php"
+    ]
+  },
+  "options": {
+    "preserve_plugins": true,
+    "preserve_themes": false
+  }
+}
+```
+
+#### Use Cases
+
+**Scenario 1: Deploy design changes while preserving plugin updates**
+```json
+{
+  "preserve_plugins": true,   // ✅ Keep production plugin updates
+  "preserve_themes": false    // ✅ Deploy staging theme changes
+}
+```
+
+**Scenario 2: Full restoration (emergency rollback)**
+```json
+{
+  "preserve_plugins": false,  // ⚠️ Restore everything from backup
+  "preserve_themes": false    // ⚠️ May downgrade plugins!
+}
+```
+
+---
+
 ## ✅ What's Working
 
 | Feature | Status | Notes |

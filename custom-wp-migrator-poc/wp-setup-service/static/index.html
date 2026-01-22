@@ -377,18 +377,40 @@
             const endpoint = action === 'clone' ? '/clone' : '/restore';
             
             try {
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({
+                let requestBody;
+                
+                if (action === 'clone') {
+                    requestBody = {
                         source: {
                             url: data.sourceUrl,
                             username: data.username,
                             password: data.password
                         }
-                    })
+                    };
+                } else {
+                    // Restore requires both source and target
+                    requestBody = {
+                        source: {
+                            url: data.sourceUrl,
+                            username: data.username,
+                            password: data.password
+                        },
+                        target: {
+                            url: data.targetUrl,
+                            username: data.targetUsername,
+                            password: data.targetPassword
+                        },
+                        preserve_plugins: data.preservePlugins !== false,
+                        preserve_themes: data.preserveThemes === true
+                    };
+                }
+                
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(requestBody)
                 });
                 
                 const result = await response.json();
@@ -485,31 +507,52 @@
         });
         
         document.querySelector('[data-action="restore"]').addEventListener('click', async () => {
-            const formData = {
-                sourceUrl: document.getElementById('sourceUrl').value,
-                username: document.getElementById('username').value,
-                password: document.getElementById('password').value
-            };
+            const sourceUrl = document.getElementById('sourceUrl').value;
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
             
-            if (!formData.sourceUrl || !formData.username || !formData.password) {
+            if (!sourceUrl || !username || !password) {
                 showStatus('error', '❌ Please fill in all fields');
                 return;
             }
+            
+            // Prompt for target credentials
+            const targetUrl = prompt('Enter TARGET (production) WordPress URL:', sourceUrl);
+            if (!targetUrl) return;
+            
+            const targetUsername = prompt('Enter TARGET admin username:', username);
+            if (!targetUsername) return;
+            
+            const targetPassword = prompt('Enter TARGET admin password:');
+            if (!targetPassword) return;
+            
+            const preservePlugins = confirm('Preserve production plugins? (Recommended: YES to prevent downgrades)\n\nClick OK for YES, Cancel for NO');
+            
+            const formData = {
+                sourceUrl: sourceUrl,
+                username: username,
+                password: password,
+                targetUrl: targetUrl,
+                targetUsername: targetUsername,
+                targetPassword: targetPassword,
+                preservePlugins: preservePlugins,
+                preserveThemes: false  // Always restore themes from staging
+            };
             
             setButtonsDisabled(true);
             status.style.display = 'none';
             
             try {
                 // Stage 1: Setup Source
-                updateProgress(1, 'Setting up source WordPress and installing plugin...');
+                updateProgress(1, 'Setting up source (staging) WordPress...');
                 await new Promise(resolve => setTimeout(resolve, 1000));
                 
-                // Stage 2: Provision Target
-                updateProgress(2, 'Provisioning ephemeral WordPress target on AWS EC2...');
+                // Stage 2: Setup Target
+                updateProgress(2, 'Setting up target (production) WordPress...');
                 await new Promise(resolve => setTimeout(resolve, 1500));
                 
                 // Stage 3: Restore Content
-                updateProgress(3, 'Restoring content from source to target...');
+                updateProgress(3, 'Restoring content with plugin preservation...');
                 
                 // Perform the actual restore
                 const result = await performAction('restore', formData);
@@ -520,14 +563,16 @@
                 
                 const details = {
                     'Status': '✅ Success',
-                    'Message': result.message
+                    'Message': result.message,
+                    'Plugins Preserved': result.options?.preserve_plugins ? 'Yes' : 'No',
+                    'Themes Restored': result.options?.preserve_themes === false ? 'Yes' : 'No'
                 };
                 
-                if (result.provisioned_target) {
-                    details['Target URL'] = result.provisioned_target.target_url;
-                    details['Username'] = result.provisioned_target.wordpress_username;
-                    details['Password'] = result.provisioned_target.wordpress_password;
-                    details['Expires At'] = result.provisioned_target.expires_at;
+                if (result.integrity) {
+                    details['Integrity Status'] = result.integrity.status;
+                    if (result.integrity.warnings && result.integrity.warnings.length > 0) {
+                        details['Warnings'] = result.integrity.warnings.join(', ');
+                    }
                 }
                 
                 showStatus('success', '🎉 Restore completed successfully!', details);

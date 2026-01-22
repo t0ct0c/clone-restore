@@ -136,6 +136,22 @@ class CloneResponse(BaseModel):
     provisioned_target: Optional[Dict] = None  # Details of auto-provisioned target
 
 
+class RestoreRequest(BaseModel):
+    source: WordPressCredentials
+    target: WordPressCredentials
+    preserve_plugins: bool = Field(True, description="Preserve production plugin updates")
+    preserve_themes: bool = Field(False, description="Preserve production themes (default: false, restore from staging)")
+
+
+class RestoreResponse(BaseModel):
+    success: bool
+    message: str
+    source_api_key: Optional[str] = None
+    target_api_key: Optional[str] = None
+    integrity: Optional[Dict] = None
+    options: Optional[Dict] = None
+
+
 # Helper Functions
 async def setup_wordpress(url: str, username: str, password: str, role: str = 'source') -> dict:
     """
@@ -440,6 +456,108 @@ def perform_clone(source_url: str, source_api_key: str, target_url: str, target_
         }
 
 
+def perform_restore(source_url: str, source_api_key: str, target_url: str, target_api_key: str, preserve_plugins: bool = True, preserve_themes: bool = False, admin_user: str = None, admin_password: str = None) -> dict:
+    """
+    Perform WordPress restore operation with selective preservation
+    
+    Args:
+        source_url: Source WordPress URL (staging/backup)
+        source_api_key: Source API key
+        target_url: Target WordPress URL (production)
+        target_api_key: Target API key
+        preserve_plugins: Keep production plugins (default: True)
+        preserve_themes: Keep production themes (default: False - restore from staging)
+        admin_user: Administrator username to create/update after import
+        admin_password: Administrator password to create/update after import
+    
+    Returns:
+        Dict with restore results including integrity check
+    """
+    logger.info(f"Starting restore from {source_url} to {target_url}")
+    logger.info(f"Preservation: plugins={preserve_plugins}, themes={preserve_themes}")
+    
+    try:
+        # Step 1: Export from source (staging/backup)
+        logger.info("Exporting from source...")
+        export_response = requests.post(
+            f"{source_url}/wp-json/custom-migrator/v1/export",
+            headers={'X-Migrator-Key': source_api_key},
+            timeout=TIMEOUT
+        )
+        
+        if export_response.status_code != 200:
+            return {
+                'success': False,
+                'error_code': 'EXPORT_FAILED',
+                'message': f'Export failed: {export_response.text}'
+            }
+        
+        export_data = export_response.json()
+        archive_url = export_data.get('download_url')
+        
+        if not archive_url:
+            return {
+                'success': False,
+                'error_code': 'EXPORT_FAILED',
+                'message': 'Export did not return archive URL'
+            }
+        
+        logger.info(f"Export completed, archive URL: {archive_url}")
+        
+        # Step 2: Import to target with preservation options
+        logger.info("Importing to target with preservation options...")
+        import_payload = {
+            'archive_url': archive_url,
+            'preserve_plugins': preserve_plugins,
+            'preserve_themes': preserve_themes,
+            'public_url': target_url
+        }
+        
+        if admin_user and admin_password:
+            import_payload['admin_user'] = admin_user
+            import_payload['admin_password'] = admin_password
+
+        import_response = requests.post(
+            f"{target_url}/wp-json/custom-migrator/v1/import",
+            headers={
+                'X-Migrator-Key': target_api_key,
+                'Content-Type': 'application/json'
+            },
+            json=import_payload,
+            timeout=TIMEOUT
+        )
+
+        if import_response.status_code != 200:
+            return {
+                'success': False,
+                'error_code': 'IMPORT_FAILED',
+                'message': f'Import failed: {import_response.text}'
+            }
+        
+        import_data = import_response.json()
+        logger.info("Restore completed successfully")
+        
+        # Include integrity check results
+        integrity = import_data.get('integrity', {})
+        if integrity.get('warnings'):
+            logger.warning(f"Integrity warnings: {integrity['warnings']}")
+        
+        return {
+            'success': True,
+            'message': 'Restore completed successfully',
+            'integrity': integrity,
+            'options': import_data.get('options', {})
+        }
+        
+    except Exception as e:
+        logger.error(f"Restore failed: {e}")
+        return {
+            'success': False,
+            'error_code': 'RESTORE_ERROR',
+            'message': f'Restore failed: {str(e)}'
+        }
+
+
 # API Endpoints
 @app.get("/")
 async def root():
@@ -658,12 +776,76 @@ async def clone_endpoint(request: CloneRequest):
     )
 
 
-@app.post("/restore", response_model=CloneResponse)
-async def restore_endpoint(request: CloneRequest):
+@app.post("/restore", response_model=RestoreResponse)
+async def restore_endpoint(request: RestoreRequest):
     """
-    Restore WordPress from source to target (identical to clone, just semantic naming)
+    Restore WordPress from staging/backup to production with selective preservation.
+    
+    By default:
+    - Preserves production plugins (to avoid downgrading updated plugins)
+    - Restores themes from staging (to deploy design changes)
+    - Restores database and uploads from staging
     """
-    return await clone_endpoint(request)
+    logger.info(f"Restore requested: {request.source.url} -> {request.target.url}")
+    logger.info(f"Options: preserve_plugins={request.preserve_plugins}, preserve_themes={request.preserve_themes}")
+    
+    # Setup source (staging/backup)
+    source_result = await setup_wordpress_with_browser(
+        str(request.source.url),
+        request.source.username,
+        request.source.password,
+        role='source'
+    )
+    
+    if not source_result.get('success'):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Source setup failed: {source_result.get('message')}"
+        )
+    
+    # Setup target (production)
+    logger.info("Setting up target (production)...")
+    target_result = await setup_wordpress_with_browser(
+        str(request.target.url),
+        request.target.username,
+        request.target.password,
+        role='target'
+    )
+    
+    if not target_result.get('success'):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Target setup failed: {target_result.get('message')}"
+        )
+    
+    # Perform restore with preservation options
+    restore_result = perform_restore(
+        str(request.source.url),
+        source_result['api_key'],
+        str(request.target.url),
+        target_result['api_key'],
+        preserve_plugins=request.preserve_plugins,
+        preserve_themes=request.preserve_themes,
+        admin_user=request.target.username,
+        admin_password=request.target.password
+    )
+    
+    if not restore_result.get('success'):
+        logger.error(f"Restore failed: {restore_result.get('message')}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=restore_result.get('message', 'Restore failed')
+        )
+    
+    logger.info("Restore process finished successfully")
+    return RestoreResponse(
+        success=True,
+        message="Restore completed successfully",
+        source_api_key=source_result['api_key'],
+        target_api_key=target_result['api_key'],
+        integrity=restore_result.get('integrity'),
+        options=restore_result.get('options')
+    )
 
 
 @app.post("/provision", response_model=ProvisionResponse)
