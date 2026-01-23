@@ -59,7 +59,6 @@ node_modules/
 
 # Custom Migrator Plugin Source (Artifact/Injected)
 custom-wp-migrator-poc/plugin/
-custom-wp-migrator-poc/wordpress-target-image/plugin/
 custom-wp-migrator-poc/wp-setup-service/plugin/
 
 # Large binaries

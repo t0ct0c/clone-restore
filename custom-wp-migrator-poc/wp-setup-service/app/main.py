@@ -688,6 +688,7 @@ async def clone_endpoint(request: CloneRequest):
         
         provisioned_target_info = {
             'target_url': public_url,  # Show public URL to user
+            'public_url': public_url,  # For URL updates after Apache reload
             'wordpress_username': target_username,
             'wordpress_password': target_password,
             'expires_at': provision_result.get('expires_at'),
@@ -763,6 +764,15 @@ async def clone_endpoint(request: CloneRequest):
         provisioner.reload_apache_in_container(
             provisioned_target_info['instance_ip'],
             provisioned_target_info['customer_id']
+        )
+        
+        # Force-update WordPress URLs after Apache reload
+        # WordPress auto-detects Host header and may revert URLs to localhost
+        logger.info("Force-updating WordPress URLs to prevent auto-correction...")
+        provisioner.update_wordpress_urls(
+            provisioned_target_info['instance_ip'],
+            provisioned_target_info['customer_id'],
+            provisioned_target_info['public_url']
         )
     
     logger.info("Clone process finished successfully")

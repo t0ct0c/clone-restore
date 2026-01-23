@@ -469,14 +469,15 @@ class EC2Provisioner:
             nginx_config = f"""
 location {path_prefix}/ {{
     proxy_pass http://localhost:{port}/;
-    proxy_set_header Host $host;
+    # Always present upstream as localhost to WordPress to avoid host-mismatch redirect loops
+    proxy_set_header Host localhost;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Prefix {path_prefix};
     
-    # Rewrite redirects
+    # Rewrite redirects back through the path prefix
     proxy_redirect / {path_prefix}/;
 }}
 """
@@ -596,6 +597,62 @@ location {path_prefix}/ {{
             
         except Exception as e:
             logger.warning(f"Failed to reload Apache in container: {e}")
+            return False
+    
+    def update_wordpress_urls(self, instance_ip: str, customer_id: str, public_url: str) -> bool:
+        """Force-lock WordPress home/siteurl to prevent auto-correction via wp-config.php constants"""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            ssh.connect(
+                instance_ip,
+                username='ec2-user',
+                key_filename=self.ssh_key_path,
+                timeout=30
+            )
+            
+            # Step 1: Update database URLs
+            docker_cmd = f"""
+            sudo docker exec {customer_id} wp db query \
+                'UPDATE wp_options SET option_value = \"{public_url}\" WHERE option_name IN (\"home\", \"siteurl\");' \
+                --path=/var/www/html --allow-root
+            """
+            stdin, stdout, stderr = ssh.exec_command(docker_cmd)
+            stdout.channel.recv_exit_status()
+            
+            # Step 2: Lock URLs in wp-config.php as constants so WordPress can't auto-change them
+            # This prevents WordPress from detecting Host header mismatches and "correcting" the URLs
+            wp_config_cmd = f"""
+            sudo docker exec {customer_id} bash -c '
+            # Find the line before wp-settings.php require
+            line_num=$(grep -n "require_once ABSPATH . \'wp-settings.php\';" /var/www/html/wp-config.php | cut -d: -f1)
+            if [ ! -z "$line_num" ]; then
+                # Insert static URL definitions before wp-settings.php
+                sed -i "$((line_num-1))i /* Lock site URLs to prevent auto-correction */\\
+define(\\"WP_HOME\\", \\"{public_url}\\");\\
+define(\\"WP_SITEURL\\", \\"{public_url}\\");" /var/www/html/wp-config.php
+            fi
+            # Comment out dynamic URL detection that overrides static definitions
+            sed -i "/^define.*WP_HOME.*\\$proto/s/^/\\/\\/ /" /var/www/html/wp-config.php
+            sed -i "/^define.*WP_SITEURL.*\\$proto/s/^/\\/\\/ /" /var/www/html/wp-config.php
+            sed -i "/^define.*COOKIEPATH.*\\$prefix/s/^/\\/\\/ /" /var/www/html/wp-config.php
+            '
+            """
+            stdin, stdout, stderr = ssh.exec_command(wp_config_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            
+            ssh.close()
+            
+            if exit_status == 0:
+                logger.info(f"WordPress URLs locked to {public_url} in wp-config.php")
+                return True
+            else:
+                logger.warning(f"Failed to lock WordPress URLs (exit {exit_status})")
+                return False
+            
+        except Exception as e:
+            logger.warning(f"Failed to lock WordPress URLs: {e}")
             return False
     
     def _wait_for_health(self, url: str, timeout: int = 30) -> bool:
