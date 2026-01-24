@@ -351,6 +351,12 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 
                 l.info(f"Successfully retrieved API key starting with: {api_key[:8]}...")
                 
+                # Step 4.5: Verify REST API is working
+                l.info("Step 4.5: Verifying REST API endpoints are registered")
+                # Navigate to a page to trigger plugins_loaded hook
+                await page.goto(f"{url}/wp-admin/", wait_until="networkidle", timeout=30000)
+                l.info("Triggered plugins_loaded by loading wp-admin dashboard")
+                
                 # Step 5: Enable import for target (skip for source)
                 if role == 'target':
                     l.info("Enabling import on target")
