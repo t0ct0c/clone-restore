@@ -69,5 +69,7 @@ custom-wp-migrator-poc/wp-setup-service/plugin/
 
 # custom
 QODER.mod
+QODER.md
+AGENTS.md
 .qoder/
 openspec/
