@@ -361,22 +361,28 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 # Step 5: Enable import for target (skip for source)
                 if role == 'target':
                     l.info("Enabling import on target")
+                    # Navigate back to settings page to ensure we're on the right page
+                    await page.goto(f"{url}/wp-admin/options-general.php?page=custom-migrator-settings", wait_until="networkidle", timeout=60000)
+                    
                     import_checkbox = page.locator('input[name="custom_migrator_enable_import"]')
                     
-                    # Check if already checked
-                    is_checked = await import_checkbox.is_checked()
-                    if not is_checked:
-                        await import_checkbox.check()
-                        
-                        # Save settings
-                        save_button = page.locator('input[type="submit"][name="submit"]')
-                        await save_button.click()
-                        
-                        # Wait for settings saved message
-                        await page.wait_for_selector('text=Settings saved', timeout=30000)
-                        l.info("Import enabled and settings saved")
-                    else:
-                        l.info("Import already enabled")
+                    # Check if already checked with timeout
+                    try:
+                        is_checked = await import_checkbox.is_checked(timeout=10000)
+                        if not is_checked:
+                            await import_checkbox.check(timeout=10000)
+                            
+                            # Save settings
+                            save_button = page.locator('input[type="submit"][name="submit"]')
+                            await save_button.click(timeout=10000)
+                            
+                            # Wait for settings saved message
+                            await page.wait_for_selector('text=Settings saved', timeout=30000)
+                            l.info("Import enabled and settings saved")
+                        else:
+                            l.info("Import already enabled")
+                    except Exception as e:
+                        l.warning(f"Could not enable import checkbox: {e}, continuing anyway")
                 else:
                     l.info(f"Skipping import enable for {role} role")
                 
