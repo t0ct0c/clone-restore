@@ -16,52 +16,56 @@ No one needs to log into servers or manually install plugins; the system behaves
 
 ```mermaid
 graph TD
-    A["User or external tool"] --> B["Web UI / API service"]
+    A["User / Postman / External Tool"] --> B["Web UI / API Service<br/>(Management EC2: 13.222.20.138:8000)"]
 
-    subgraph "Management Plane"
-        B
-        C["Clone and restore orchestrator"]
-        D["Browser automation engine"]
-        E["EC2 provisioner"]
-        F["Observability stack (logs and traces)"]
+    subgraph "Management Plane (EC2: 13.222.20.138)"
+        B["FastAPI Service"]
+        C["Clone & Restore Orchestrator"]
+        D["Browser Automation<br/>(Playwright + Camoufox)"]
+        E["EC2 Provisioner"]
     end
 
-    subgraph "Source Side"
-        G["Live WordPress site"]
-        H["Migration plugin on source"]
+    subgraph "Source Side (Production)"
+        G["Live WordPress Site<br/>(e.g., bonnel.ai on SiteGround)"]
+        H["Custom Migrator Plugin<br/>(Auto-installed via browser)"]
     end
 
-    subgraph "Target Side"
-        I["AWS Auto Scaling Group for target hosts"]
-        J["Per-customer WordPress clone (container + plugin)"]
-        K["Shared MySQL database server"]
-        L["Reverse proxy / load balancer"]
+    subgraph "Target Side (AWS us-east-1)"
+        L["Application Load Balancer<br/>(wp-targets-alb)"]
+        I["Target EC2 Host<br/>(10.0.13.72)"]
+        J1["WordPress Clone Container 1<br/>(Docker + SQLite)"]
+        J2["WordPress Clone Container 2<br/>(Docker + SQLite)"]
+        J3["WordPress Clone Container N<br/>(Docker + SQLite)"]
+        N1["Nginx Reverse Proxy<br/>(Path-based routing)"]
     end
 
-    subgraph "Safety Layer"
-        M["Safe-restore logic"]
-        N["Temporary plugin backup on target"]
-        O["Integrity checks (plugins and themes)"]
+    subgraph "Plugin Features"
+        M["Export Endpoint<br/>(/wp-json/custom-migrator/v1/export)"]
+        O["Import Endpoint<br/>(/wp-json/custom-migrator/v1/import)"]
+        P["Must-Use Plugin<br/>(Disables canonical redirects)"]
     end
 
+    A --> B
     B --> C
     C --> D
     C --> E
-    C --> F
-
-    C --> G
-    D --> G
+    
+    D -->|"Browser login & plugin setup"| G
     G --> H
-
-    E --> I
-    I --> J
-    J --> K
-    J --> L
-
-    C --> M
-    M --> N
-    M --> O
-    J --> F
+    H --> M
+    
+    E -->|"Provision container"| I
+    I --> J1 & J2 & J3
+    I --> N1
+    
+    L -->|"Route /clone-xxx/"| N1
+    N1 -->|"Proxy to container"| J1 & J2 & J3
+    
+    C -->|"Export via REST API"| M
+    C -->|"Import via REST API"| O
+    
+    J1 & J2 & J3 --> O
+    J1 & J2 & J3 --> P
 ```
 
 You can read this as:
@@ -77,56 +81,122 @@ You can read this as:
 
 ### Management Plane (Control Layer)
 
-- Runs on a **dedicated EC2 "management" instance** in a private AWS network.
-- Hosts the **Web UI / API Service** that receives clone and restore requests.
-- Hosts the **Browser Automation Engine** that behaves like a human using a browser:
-  - Navigates to the WordPress admin screen.
-  - Logs in with the credentials you provide.
-  - Uploads, activates, and configures the migration plugin.
-- Hosts the **Clone & Restore Orchestrator** that:
-  - Coordinates source setup.
-  - Coordinates target provisioning and clone creation.
-  - Drives the safe restore back into production.
-- Hosts the **Observability Stack** (logs and traces) used for debugging and monitoring.
+**Location:** EC2 instance at `13.222.20.138:8000` (us-east-1)
+
+**Components:**
+- **FastAPI Web Service** (`wp-setup-service` Docker container)
+  - Exposes REST API endpoints: `/clone`, `/restore`, `/health`
+  - Serves Web UI for manual testing at `http://13.222.20.138:8000/`
+  - Handles auto-provisioning of target containers
+  
+- **Browser Automation Engine** (Playwright + Camoufox)
+  - Behaves like a human user in a headless browser
+  - Logs into WordPress admin with provided credentials
+  - Uploads the Custom Migrator plugin ZIP (`plugin.zip`)
+  - Activates the plugin and retrieves API key from settings page
+  - Enables import on target sites
+  - **Quirk:** Accepts both `/wp-admin/` and `/wp-admin.php` as valid admin URLs
+  
+- **Clone & Restore Orchestrator**
+  - Coordinates source plugin setup via browser automation
+  - Provisions target containers via EC2 provisioner
+  - Calls REST API endpoints for export/import operations
+  - Manages clone lifecycle and TTL expiration
 
 ### Source Side (Live Site)
 
-- This is your **existing WordPress site** (production or a customer site) hosted wherever it already lives.
-- The system:
-  - Logs in using admin credentials.
-  - Installs and activates the **Custom Migrator** plugin if it is not already active.
-  - Uses that plugin to **export the site** into an archive that includes database content, themes, plugins, and media.
+**Location:** Any WordPress site accessible via HTTPS (e.g., `https://bonnel.ai` on SiteGround)
+
+**Requirements:**
+- WordPress admin credentials (username + password)
+- Site must be accessible from management EC2
+- **Important:** Use HTTPS URLs (HTTP causes 301 redirects that break POST requests)
+
+**What Happens:**
+1. Browser automation logs in with provided credentials
+2. Custom Migrator plugin is uploaded and activated (if not present)
+3. API key is retrieved from plugin settings
+4. Export endpoint (`/wp-json/custom-migrator/v1/export`) is called to create archive
+5. Archive includes: database (SQL), themes, plugins, uploads, and wp-config.php
+
+**Known Issue:** Sites with SiteGround-specific plugins (sg-security, sg-cachepress, wordpress-starter) may cause redirect loops when cloned to subdirectory paths. These plugins work correctly when restoring back to SiteGround hosting.
 
 ### Target Side (Clone Environment in AWS)
 
-- An **Auto Scaling Group** of EC2 instances acts as a **pool of target hosts**.
-- On those hosts, we run:
-  - **WordPress containers** (one per clone/customer) with the migration plugin already pre-wired.
-  - A **shared MySQL server** that stores the data for each clone in a separate database.
-  - An **Nginx-based reverse proxy / load balancer** that routes traffic to the right clone using a unique path or URL.
-- Each clone is **temporary and isolated**:
-  - It has its own admin credentials.
-  - It can be given a **time-to-live (TTL)** after which it is automatically cleaned up.
+**Architecture:**
+- **Application Load Balancer (ALB):** `wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com`
+  - Public-facing entry point for all clones
+  - Routes traffic based on path prefix (e.g., `/clone-20260124-035840/`)
+  
+- **Target EC2 Host:** `10.0.13.72` (private IP in us-east-1)
+  - Runs Docker containers for WordPress clones
+  - Runs Nginx reverse proxy for path-based routing
+  - Each container uses SQLite (not shared MySQL)
+  
+- **WordPress Clone Containers:**
+  - Docker image: `044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest`
+  - Base: Official WordPress image + Apache + PHP 8.3
+  - Pre-installed: Custom Migrator plugin, wp-cli
+  - Storage: SQLite database (no MySQL dependency)
+  - Naming: `clone-YYYYMMDD-HHMMSS` (e.g., `clone-20260124-035840`)
+  
+- **Nginx Configuration:**
+  - Path-based routing: `/clone-xxx/` → container port
+  - Proxy headers: `Host: localhost`, `X-Forwarded-Host: ALB-DNS`
+  - Handles subdirectory WordPress installations
 
-### Safety Layer (For Restore Back to Production)
+**Clone Isolation:**
+- Each clone has unique admin credentials (username: `admin`, random password)
+- Each clone has its own SQLite database file
+- Each clone has a TTL (default 60 minutes) for automatic cleanup
+- Clones are accessible via: `http://ALB-DNS/clone-TIMESTAMP/`
 
-- Lives inside the **WordPress migration plugin** running on the target (production) site.
-- Provides **safe-restore behavior**:
-  - Creates a **temporary backup** of existing production plugins before applying a restore.
-  - Applies the new content, themes, and other changes from staging.
-  - Restores or preserves critical plugins to avoid downgrading or breaking an updated production environment.
-  - Runs **integrity checks** after the restore and reports potential problems.
-- The temporary backups are stored on the **production WordPress host** (inside the container’s file system) and are automatically cleaned up when the restore completes successfully.
+### Plugin Features (Custom Migrator)
+
+**Export Endpoint:** `POST /wp-json/custom-migrator/v1/export`
+- Creates a ZIP archive of the entire WordPress site
+- Includes: database dump, wp-content (themes/plugins/uploads), wp-config.php
+- Returns download URL for the archive
+- Requires API key authentication via `X-Migrator-Key` header
+
+**Import Endpoint:** `POST /wp-json/custom-migrator/v1/import`
+- Accepts archive URL and imports content
+- Disabled by default (must be enabled in plugin settings)
+- Extracts database, themes, plugins, and uploads
+- Updates wp-config.php with correct URL constants
+- Creates must-use plugin to prevent canonical redirects
+- Requires API key authentication
+
+**Must-Use Plugin (force-url-constants.php):**
+- Automatically created during import
+- Disables WordPress canonical redirects
+- Forces WordPress to use `WP_HOME` and `WP_SITEURL` constants
+- Prevents redirect loops in subdirectory installations
+
+**Safety Features:**
+- Preserves target plugins option (`preserve_target_plugins`)
+- Preserves target theme option (`preserve_target_theme`)
+- Excludes Custom Migrator plugin from import to avoid duplication
+- Sets correct URL constants in wp-config.php before WordPress loads
 
 ## How a Clone Works (Non-Technical Walkthrough)
 
 This is what happens when someone clicks **“Clone”** in the UI or an external tool calls the clone process.
 
 1. **Request Enters the Management Plane**
-   - The UI / API receives a request with:
-     - Where the **live site** is.
-     - Admin credentials.
-     - Whether we should **auto-provision** a new target or use an existing one.
+   - The API receives a POST request to `/clone` with:
+     ```json
+     {
+       "source": {
+         "url": "https://bonnel.ai",
+         "username": "charles",
+         "password": "your-password"
+       },
+       "auto_provision": true,
+       "ttl_minutes": 60
+     }
+     ```
+   - **Important:** Use HTTPS for the source URL (HTTP causes redirect issues)
 
 2. **Robot Browser Logs Into the Live Site**
    - The system starts a **headless browser** (no visible window) that behaves like a person:
@@ -155,11 +225,25 @@ This is what happens when someone clicks **“Clone”** in the UI or an externa
    - The target WordPress clone now looks and behaves like the live site at the time of export.
 
 6. **Result is Returned**
-   - The system returns:
-     - Where the clone is reachable.
-     - Admin credentials for that clone.
-     - When it will expire (if using TTL).
-   - At this point, editors or external tools can safely test changes on the clone instead of touching the real production site.
+   - The system returns a JSON response:
+     ```json
+     {
+       "success": true,
+       "message": "Clone completed successfully",
+       "source_api_key": "GL24zU5fHmxC0Hlh4c4WxVorOzzi4DCr",
+       "target_api_key": "migration-master-key",
+       "provisioned_target": {
+         "target_url": "http://ALB-DNS/clone-20260124-035840",
+         "wordpress_username": "admin",
+         "wordpress_password": "F7n4xwasIMOimxSU",
+         "expires_at": "2026-01-24T05:00:26.660750Z",
+         "ttl_minutes": 60,
+         "customer_id": "clone-20260124-035840"
+       }
+     }
+     ```
+   - **Response includes:** Clone URL, admin username, admin password, expiration time
+   - At this point, editors or external tools can safely test changes on the clone
 
 ## How a Safe Restore Works (Pushing Changes Back)
 
@@ -202,10 +286,26 @@ When the changes made on the clone (staging) environment are ready, the system c
   - Correlate the failure with the specific clone or customer ID.
   - Avoid guessing; they have a timeline of what the system did.
 
+## Current Known Issues & Limitations
+
+### ✅ Fixed Issues
+- **wp-admin redirect to localhost:** Fixed by removing `$_SERVER['HTTP_HOST']` override
+- **wp-admin.php redirect:** Browser automation now accepts both `/wp-admin/` and `/wp-admin.php`
+- **Duplicate plugins:** Importer excludes Custom Migrator plugin from import
+- **Import checkbox timeout:** Added error handling and shorter timeouts
+
+### ⚠️ Known Limitations
+- **SiteGround plugin redirect loops:** Clones inherit SiteGround plugins (sg-security, sg-cachepress, wordpress-starter) that cause Apache internal redirect loops (AH00124) when accessing REST API endpoints in subdirectory paths. These plugins work correctly when restoring back to SiteGround hosting.
+- **HTTPS requirement:** Source sites must use HTTPS URLs. HTTP URLs cause 301 redirects that break POST requests.
+- **Clone TTL:** Clones expire after TTL period (default 60 minutes) and are automatically deleted.
+
 ## What To Remember (Executive Summary)
 
-- **There is one control plane** (management host) that talks to everything else.
-- **Clones live in AWS** as temporary WordPress containers with real MySQL, behind a reverse proxy.
-- **The live site is never edited by hand** during clone or restore; everything is driven by browser automation and plugins.
-- **Safe restore always takes a temporary plugin backup** on production before applying changes from staging.
-- **Logs and traces** are centralised, so when something fails, we can see exactly which step went wrong without touching customer credentials.
+- **One control plane** (management EC2) orchestrates everything via REST API
+- **Clones live in AWS** as Docker containers with SQLite, behind ALB + Nginx reverse proxy
+- **Auto-provisioning** creates isolated clones with unique credentials and TTL
+- **Browser automation** handles plugin installation without manual intervention
+- **Path-based routing** allows multiple clones on single EC2 host
+- **REST API endpoints** handle export/import operations with API key authentication
+- **Response includes credentials** - URL, username, and password returned immediately
+- **Use HTTPS** for source URLs to avoid redirect issues
