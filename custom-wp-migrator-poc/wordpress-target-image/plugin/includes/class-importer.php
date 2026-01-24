@@ -419,7 +419,13 @@ class Custom_Migrator_Importer {
                 if (file_exists($dest)) {
                     $this->recursive_delete($dest);
                 }
-                $this->recursive_copy($src, $dest);
+                
+                // For plugins, exclude custom-migrator to prevent duplicates
+                if ($item === 'plugins') {
+                    $this->recursive_copy_exclude($src, $dest, array('custom-migrator', 'plugin'));
+                } else {
+                    $this->recursive_copy($src, $dest);
+                }
             }
         }
         
@@ -456,6 +462,34 @@ class Custom_Migrator_Importer {
             }
         } else {
             copy($src, $dest);
+        }
+    }
+    
+    private function recursive_copy_exclude($src, $dest, $exclude_dirs = array()) {
+        if (!file_exists($dest)) {
+            mkdir($dest, 0755, true);
+        }
+        
+        $items = scandir($src);
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+            
+            // Skip excluded directories
+            if (in_array($item, $exclude_dirs)) {
+                $this->log("Skipping excluded directory during restore: $item");
+                continue;
+            }
+            
+            $src_path = $src . '/' . $item;
+            $dest_path = $dest . '/' . $item;
+            
+            if (is_dir($src_path)) {
+                $this->recursive_copy($src_path, $dest_path);
+            } else {
+                copy($src_path, $dest_path);
+            }
         }
     }
     
