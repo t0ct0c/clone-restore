@@ -120,7 +120,8 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                         l.info("Detected reauth or loggedout, attempting force navigation to wp-admin")
                         await page.goto(f"{url}/wp-admin/", wait_until="networkidle", timeout=60000)
                 
-                if '/wp-admin' not in page.url:
+                # Check for both /wp-admin/ and /wp-admin.php (new clones use .php)
+                if '/wp-admin' not in page.url and 'wp-admin.php' not in page.url:
                     l.error(f"Failed to reach admin area after login. Current URL: {page.url}")
                     # Log snippets of content to see if we're stuck on a 'Verify you are human' page
                     content = await page.content()
