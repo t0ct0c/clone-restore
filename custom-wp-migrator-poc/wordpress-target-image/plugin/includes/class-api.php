@@ -90,6 +90,8 @@ class Custom_Migrator_API {
         $public_url = isset($params['public_url']) ? $params['public_url'] : null;
         $admin_user = isset($params['admin_user']) ? $params['admin_user'] : null;
         $admin_password = isset($params['admin_password']) ? $params['admin_password'] : null;
+        $preserve_themes = isset($params['preserve_themes']) ? (bool)$params['preserve_themes'] : false;
+        $preserve_plugins = isset($params['preserve_plugins']) ? (bool)$params['preserve_plugins'] : false;
         
         // Check for file upload
         $files = $request->get_file_params();
@@ -112,7 +114,7 @@ class Custom_Migrator_API {
         }
         
         $importer = Custom_Migrator_Importer::get_instance();
-        $result = $importer->import($archive_path, $archive_url, $public_url, $admin_user, $admin_password);
+        $result = $importer->import($archive_path, $archive_url, $public_url, $admin_user, $admin_password, $preserve_themes, $preserve_plugins);
         
         if ($result['success']) {
             return new WP_REST_Response($result, 200);

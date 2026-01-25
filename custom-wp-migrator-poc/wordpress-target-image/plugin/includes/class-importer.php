@@ -15,7 +15,7 @@ class Custom_Migrator_Importer {
         return self::$instance;
     }
     
-    public function import($archive_path = null, $archive_url = null, $target_url_override = null, $admin_user = null, $admin_password = null) {
+    public function import($archive_path = null, $archive_url = null, $target_url_override = null, $admin_user = null, $admin_password = null, $preserve_themes = false, $preserve_plugins = false) {
         try {
             $this->log('Starting import...');
             
@@ -46,7 +46,7 @@ class Custom_Migrator_Importer {
             
             // Restore files
             $this->log('Restoring files...');
-            $this->restore_files($extract_dir . '/wp-content');
+            $this->restore_files($extract_dir . '/wp-content', $preserve_themes, $preserve_plugins);
             
             // Create or update admin user if credentials provided
             if ($admin_user && $admin_password) {
@@ -386,19 +386,19 @@ class Custom_Migrator_Importer {
         return $sql;
     }
     
-    private function restore_files($source_wp_content) {
+    private function restore_files($source_wp_content, $preserve_themes = false, $preserve_plugins = false) {
         if (!file_exists($source_wp_content)) {
             throw new Exception('wp-content directory not found in archive');
         }
         
         $dest_wp_content = WP_CONTENT_DIR;
         
-        // Preserve custom-migrator plugin
-        $preserve_plugins = array('custom-migrator');
+        // Always preserve custom-migrator plugin
+        $essential_plugins = array('custom-migrator');
         
         // Backup essential plugins before restore
         $plugin_backups = array();
-        foreach ($preserve_plugins as $plugin) {
+        foreach ($essential_plugins as $plugin) {
             $plugin_path = $dest_wp_content . '/plugins/' . $plugin;
             if (file_exists($plugin_path)) {
                 $backup_path = sys_get_temp_dir() . '/wp_plugin_backup_' . $plugin . '_' . uniqid();
@@ -408,25 +408,57 @@ class Custom_Migrator_Importer {
             }
         }
         
-        // Restore themes and plugins (delete first)
-        $items_to_delete = array('themes', 'plugins');
-        foreach ($items_to_delete as $item) {
-            $src = $source_wp_content . '/' . $item;
-            $dest = $dest_wp_content . '/' . $item;
-            
-            if (file_exists($src)) {
-                // Remove existing and copy new
-                if (file_exists($dest)) {
-                    $this->recursive_delete($dest);
-                }
-                
-                // For plugins, exclude custom-migrator to prevent duplicates
-                if ($item === 'plugins') {
-                    $this->recursive_copy_exclude($src, $dest, array('custom-migrator', 'plugin'));
-                } else {
-                    $this->recursive_copy($src, $dest);
-                }
+        // Backup target themes if preserve_themes is true
+        $theme_backup_path = null;
+        if ($preserve_themes) {
+            $themes_dest = $dest_wp_content . '/themes';
+            if (file_exists($themes_dest)) {
+                $theme_backup_path = sys_get_temp_dir() . '/wp_themes_backup_' . uniqid();
+                $this->recursive_copy($themes_dest, $theme_backup_path);
+                $this->log('Backed up target themes (preserve_themes=true)');
             }
+        }
+        
+        // Backup target plugins if preserve_plugins is true
+        $plugins_backup_path = null;
+        if ($preserve_plugins) {
+            $plugins_dest = $dest_wp_content . '/plugins';
+            if (file_exists($plugins_dest)) {
+                $plugins_backup_path = sys_get_temp_dir() . '/wp_plugins_backup_' . uniqid();
+                $this->recursive_copy($plugins_dest, $plugins_backup_path);
+                $this->log('Backed up target plugins (preserve_plugins=true)');
+            }
+        }
+        
+        // Restore themes
+        if (!$preserve_themes) {
+            $themes_src = $source_wp_content . '/themes';
+            $themes_dest = $dest_wp_content . '/themes';
+            if (file_exists($themes_src)) {
+                $this->log('Replacing themes from source (preserve_themes=false)...');
+                if (file_exists($themes_dest)) {
+                    $this->recursive_delete($themes_dest);
+                }
+                $this->recursive_copy($themes_src, $themes_dest);
+            }
+        } else {
+            $this->log('Keeping target themes (preserve_themes=true)');
+        }
+        
+        // Restore plugins
+        if (!$preserve_plugins) {
+            $plugins_src = $source_wp_content . '/plugins';
+            $plugins_dest = $dest_wp_content . '/plugins';
+            if (file_exists($plugins_src)) {
+                $this->log('Replacing plugins from source (preserve_plugins=false)...');
+                if (file_exists($plugins_dest)) {
+                    $this->recursive_delete($plugins_dest);
+                }
+                // Exclude custom-migrator to prevent duplicates
+                $this->recursive_copy_exclude($plugins_src, $plugins_dest, array('custom-migrator', 'plugin'));
+            }
+        } else {
+            $this->log('Keeping target plugins (preserve_plugins=true)');
         }
         
         // Restore uploads WITHOUT deleting (just overwrite to avoid permission issues)
@@ -437,12 +469,22 @@ class Custom_Migrator_Importer {
             $this->recursive_copy($uploads_src, $uploads_dest);
         }
         
-        // Restore essential plugins
+        // Restore essential plugins (custom-migrator)
         foreach ($plugin_backups as $plugin => $backup_path) {
             $plugin_dest = $dest_wp_content . '/plugins/' . $plugin;
             $this->recursive_copy($backup_path, $plugin_dest);
             $this->recursive_delete($backup_path);
             $this->log("Restored essential plugin: $plugin");
+        }
+        
+        // Clean up theme backup if it was created
+        if ($theme_backup_path && file_exists($theme_backup_path)) {
+            $this->recursive_delete($theme_backup_path);
+        }
+        
+        // Clean up plugins backup if it was created
+        if ($plugins_backup_path && file_exists($plugins_backup_path)) {
+            $this->recursive_delete($plugins_backup_path);
         }
     }
     
