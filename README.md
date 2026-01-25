@@ -2,25 +2,27 @@
 
 ## What This Does
 
-This system **clones WordPress sites** into temporary testing environments on AWS. You can:
+This system **clones WordPress sites** into temporary testing environments on AWS and **restores changes back to production**. You can:
 
 1. **Clone a live WordPress site** (e.g., bonnel.ai) to a temporary AWS container
 2. Make changes safely on the clone without touching production
-3. **Restore changes back** to production (⚠️ **NOT WORKING YET** - see [Current Status](#current-status))
+3. **Restore changes back** to production with control over themes and plugins
 
 **Key Feature:** Everything is automated via REST API - no manual server access or plugin installation needed.
 
 ## Current Status
 
 ### ✅ What's Working
-- **Clone endpoint**: Creates clones from any WordPress site (tested with bonnel.ai)
+- **Clone endpoint**: Creates clones from any WordPress site (tested with bonnel.ai on SiteGround)
+- **Restore endpoint**: Restores content, themes, and plugins from source to target
 - **Auto-provisioning**: Automatically creates isolated containers with unique credentials
 - **Browser automation**: Logs in, installs plugin, configures everything automatically
 - **Clone access**: Clones are accessible via ALB URLs with path-based routing
+- **Preserve options**: Control whether to keep or replace target themes and plugins
 
-### ⚠️ What's NOT Working
-- **Restore endpoint**: Cannot test restore because clones inherit SiteGround plugins that cause redirect loops when accessing REST API endpoints in subdirectory paths
-- **Blocker**: Need another SiteGround WordPress site to test restore workflow
+### ⚠️ Known Limitations
+- **SiteGround clones**: Clones inherit SiteGround plugins that cause redirect loops in subdirectory paths
+- **Recommendation**: If source is SiteGround, restore back to SiteGround (not to clones)
 
 ---
 
@@ -56,15 +58,15 @@ graph TD
 
 ---
 
-## Quick Start: Clone a WordPress Site
+## Quick Start
 
-### API Endpoint
-```
-POST http://13.222.20.138:8000/clone
-Content-Type: application/json
-```
+### 1. Clone a WordPress Site
 
-### Request Body
+Creates a temporary copy of your WordPress site for testing.
+
+**Endpoint:** `POST http://13.222.20.138:8000/clone`
+
+**Request:**
 ```json
 {
   "source": {
@@ -77,12 +79,14 @@ Content-Type: application/json
 }
 ```
 
-**Important:**
-- Use `https://` not `http://` (HTTP redirects break POST requests)
-- `auto_provision: true` automatically creates a container
-- `ttl_minutes`: Clone expires and is deleted after this time
+**Parameters:**
+- `url`: **Must use HTTPS** (HTTP redirects break POST requests)
+- `username`: WordPress admin username
+- `password`: WordPress admin password
+- `auto_provision`: Set to `true` to automatically create a container
+- `ttl_minutes`: Clone expires and is deleted after this time (default: 60)
 
-### Response
+**Response:**
 ```json
 {
   "success": true,
@@ -99,10 +103,79 @@ Content-Type: application/json
 }
 ```
 
-**You get back:**
+**What you get:**
 - Clone URL to access your site
 - Admin username and password
 - Expiration time
+
+---
+
+### 2. Restore to Production
+
+Restores content, themes, and plugins from source (clone or staging) to target (production).
+
+**Endpoint:** `POST http://13.222.20.138:8000/restore`
+
+**Request (Copy Everything):**
+```json
+{
+  "source": {
+    "url": "https://bonnel.ai",
+    "username": "charles",
+    "password": "source-password"
+  },
+  "target": {
+    "url": "https://betaweb.ai",
+    "username": "Charles",
+    "password": "target-password"
+  },
+  "preserve_themes": false,
+  "preserve_plugins": false
+}
+```
+
+**Request (Keep Target Themes/Plugins):**
+```json
+{
+  "source": {
+    "url": "https://bonnel.ai",
+    "username": "charles",
+    "password": "source-password"
+  },
+  "target": {
+    "url": "https://betaweb.ai",
+    "username": "Charles",
+    "password": "target-password"
+  },
+  "preserve_themes": true,
+  "preserve_plugins": true
+}
+```
+
+**Parameters:**
+- `preserve_themes`:
+  - `false` (default): Replace target themes with source themes
+  - `true`: Keep target's existing themes
+- `preserve_plugins`:
+  - `false` (default): Replace target plugins with source plugins
+  - `true`: Keep target's existing plugins
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Restore completed successfully",
+  "source_api_key": "GL24zU5fHmxC0Hlh4c4WxVorOzzi4DCr",
+  "target_api_key": "GL24zU5fHmxC0Hlh4c4WxVorOzzi4DCr"
+}
+```
+
+**What happens:**
+- Database content restored from source
+- Themes copied (unless `preserve_themes: true`)
+- Plugins copied (unless `preserve_plugins: true`)
+- Uploads/media copied
+- Custom Migrator plugin always preserved on target
 
 ---
 
@@ -152,34 +225,63 @@ Content-Type: application/json
    - Creates must-use plugin to prevent redirects
 6. **Response returned** with clone URL and credentials
 
-### Restore Process (⚠️ NOT WORKING YET)
+### Restore Process
 
-The restore endpoint exists but cannot be tested because:
-- Clones inherit SiteGround plugins from bonnel.ai
-- These plugins cause redirect loops in subdirectory paths
-- Cannot export from clones to test restore workflow
-
-**Blocker:** Need another SiteGround WordPress site to test restore to production.
+1. **Browser automation logs in** to both source and target
+2. **Export from source** via plugin REST API
+   - Creates ZIP with database, themes, plugins, uploads
+3. **Import to target** via plugin REST API
+   - Extracts content
+   - Replaces or preserves themes based on `preserve_themes`
+   - Replaces or preserves plugins based on `preserve_plugins`
+   - Updates URLs to target domain
+   - Creates must-use plugin to prevent redirects
+4. **Response returned** with success status
 
 ---
 
-## Known Issues
+## Important Gotchas
 
-### ⚠️ Active Blocker
-**SiteGround Plugin Redirect Loops**
+### 🔴 SiteGround Sources
+
+**If your source is on SiteGround hosting (like bonnel.ai):**
+
+**Problem:**
 - Clones inherit SiteGround plugins (sg-security, sg-cachepress, wordpress-starter)
 - These plugins cause Apache redirect loops (AH00124) in subdirectory paths
-- **Impact**: Cannot export from clones, blocks restore testing
-- **Workaround**: Restore back to SiteGround hosting where plugins work correctly
+- **Impact**: Cannot export from clones back to other clones
+
+**Solution:**
+- ✅ **Clone from SiteGround** → Works perfectly
+- ✅ **Restore SiteGround → SiteGround** → Works perfectly
+- ❌ **Restore Clone → Clone** → Fails due to plugin conflicts
+- ✅ **Restore SiteGround → SiteGround** → Recommended workflow
+
+**Recommended Workflow:**
+```
+1. Clone bonnel.ai (SiteGround) → Creates clone-xxx
+2. Test changes on clone-xxx
+3. Restore bonnel.ai → betaweb.ai (both SiteGround)
+   ✅ This works because SiteGround plugins work correctly on SiteGround hosting
+```
+
+**Don't do this:**
+```
+❌ Restore clone-xxx → betaweb.ai
+   (Clone has SiteGround plugins that break in subdirectory paths)
+```
+
+### 🔴 Other Requirements
+
+- **Use HTTPS**: Source URLs must be `https://` not `http://` (HTTP redirects break POST requests)
+- **Clone TTL**: Clones auto-delete after expiration (default 60 minutes)
+- **Credentials**: Must provide valid WordPress admin credentials
 
 ### ✅ Fixed Issues
 - WordPress redirect loops (fixed with must-use plugin)
 - wp-admin.php redirect (browser automation updated)
 - Import checkbox timeout (error handling added)
-
-### Requirements
-- **Use HTTPS**: Source URLs must be `https://` not `http://`
-- **Clone TTL**: Clones auto-delete after expiration (default 60 minutes)
+- Preserve parameters naming (now correctly implemented)
 
 ---
 
@@ -187,7 +289,7 @@ The restore endpoint exists but cannot be tested because:
 
 ### API Endpoints
 - **Clone**: `POST http://13.222.20.138:8000/clone`
-- **Restore**: `POST http://13.222.20.138:8000/restore` (⚠️ NOT WORKING)
+- **Restore**: `POST http://13.222.20.138:8000/restore`
 - **Health**: `GET http://13.222.20.138:8000/health`
 - **Web UI**: `http://13.222.20.138:8000/`
 
