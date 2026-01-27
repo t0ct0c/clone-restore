@@ -50,6 +50,21 @@ graph TD
 }
 ```
 
+**Curl Command:**
+```bash
+curl -X POST http://13.222.20.138:8000/clone \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "url": "https://bonnel.ai",
+      "username": "Charles",
+      "password": "xkZ%HL6v5Z5)MP9K"
+    }
+  }'
+```
+
+---
+
 ### Request 2: Restore Clone to Production
 - **Method**: `POST`
 - **URL**: `http://13.222.20.138:8000/restore`
@@ -73,6 +88,28 @@ graph TD
 }
 ```
 
+**Curl Command:**
+```bash
+curl -X POST http://13.222.20.138:8000/restore \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source": {
+      "url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS",
+      "username": "admin",
+      "password": "password-from-clone-response"
+    },
+    "target": {
+      "url": "https://betaweb.ai",
+      "username": "Charles",
+      "password": "xkZ%HL6v5Z5)MP9K"
+    },
+    "preserve_themes": false,
+    "preserve_plugins": false
+  }'
+```
+
+---
+
 ### Request 3: Test Clone REST API Export
 - **Method**: `POST`
 - **URL**: `http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export`
@@ -80,8 +117,22 @@ graph TD
   - `X-Migrator-Key: migration-master-key`
 - **Body**: (empty)
 
+**Curl Command:**
+```bash
+curl -X POST \
+  "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export" \
+  -H "X-Migrator-Key: migration-master-key"
+```
+
+---
+
 ### Request 4: Health Check
 - **Method**: `GET`
 - **URL**: `http://13.222.20.138:8000/health`
 - **Headers**: (none needed)
 - **Body**: (empty)
+
+**Curl Command:**
+```bash
+curl http://13.222.20.138:8000/health
+```
