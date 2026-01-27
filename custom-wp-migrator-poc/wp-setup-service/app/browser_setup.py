@@ -143,11 +143,17 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 
                 # Step 2: Upload plugin
                 l.info("Step 2: Checking if plugin needs upload on plugins page")
-                await page.goto(f"{url}/wp-admin/plugins.php", wait_until="networkidle", timeout=90000)
+                await page.goto(f"{url}/wp-admin/plugins.php", wait_until="domcontentloaded", timeout=90000)
                 
                 plugin_slug = 'custom-migrator'
-                # Wait for plugins table to load (increased timeout for slow sites)
-                await page.wait_for_selector('.wp-list-table', timeout=90000)
+                # Wait for page to be ready - use multiple possible selectors
+                try:
+                    await page.wait_for_selector('.wp-list-table, #the-list, .plugins', timeout=30000)
+                except Exception as e:
+                    l.warning(f"Plugins table selector timeout, checking content anyway: {e}")
+                
+                # Give page extra time to settle if needed
+                await page.wait_for_timeout(2000)
                 content = await page.content()
                 
                 if plugin_slug not in content:
