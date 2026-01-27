@@ -45,6 +45,8 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
         l = logger.bind(trace_id=trace_id)
         
         l.info(f"Starting browser-based setup for {url} (role: {role})")
+        # Always normalize URL by removing trailing slash
+        # We'll add paths with / prefix, so trailing slash causes double //
         url = url.rstrip('/')
         
         try:
@@ -342,12 +344,13 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 # Get API key value
                 api_key = await api_key_input.get_attribute('value')
                 
-                if not api_key or len(api_key) != 32:
+                # Accept either 32-char keys or the special migration-master-key (for sites that were clone targets)
+                if not api_key or (len(api_key) != 32 and api_key != 'migration-master-key'):
                     l.error(f"Retrieved invalid API key: '{api_key}'")
                     return {
                         'success': False,
                         'error_code': 'INVALID_API_KEY',
-                        'message': f'Failed to retrieve valid 32-char API key. Got: {api_key}'
+                        'message': f'Failed to retrieve valid API key. Got: {api_key}'
                     }
                 
                 l.info(f"Successfully retrieved API key starting with: {api_key[:8]}...")
