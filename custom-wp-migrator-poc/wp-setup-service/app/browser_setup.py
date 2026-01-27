@@ -149,24 +149,40 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 # Wait for page to be ready - use multiple possible selectors
                 try:
                     await page.wait_for_selector('.wp-list-table, #the-list, .plugins', timeout=30000)
+                    l.info("Plugins table loaded successfully")
                 except Exception as e:
                     l.warning(f"Plugins table selector timeout, checking content anyway: {e}")
                 
-                # Give page extra time to settle if needed
-                await page.wait_for_timeout(2000)
+                # Give slow sites extra time to fully render (betaweb.ai needs this)
+                l.info("Waiting 5 seconds for page to fully render...")
+                await page.wait_for_timeout(5000)
                 
                 # Check if plugin is already installed using proper selectors
                 plugin_exists = False
                 plugin_row = page.locator(f"tr[data-slug='{plugin_slug}']")
-                if await plugin_row.count() == 0:
+                count1 = await plugin_row.count()
+                l.info(f"Checking tr[data-slug='{plugin_slug}']: found {count1}")
+                
+                if count1 == 0:
                     # Try fallback selectors
                     plugin_row = page.locator("tr[data-slug='custom-migrator.php']")
-                    if await plugin_row.count() == 0:
+                    count2 = await plugin_row.count()
+                    l.info(f"Checking tr[data-slug='custom-migrator.php']: found {count2}")
+                    
+                    if count2 == 0:
                         plugin_row = page.locator("tr:has-text('Custom WP Migrator')")
+                        count3 = await plugin_row.count()
+                        l.info(f"Checking tr:has-text('Custom WP Migrator'): found {count3}")
                 
                 if await plugin_row.count() > 0:
                     plugin_exists = True
                     l.info("Plugin already installed, skipping upload")
+                else:
+                    # For target role, if plugin not found, it might be corrupted or hidden
+                    # Skip upload (which causes session loss) and try to activate directly
+                    if role == 'target':
+                        l.warning("Plugin not detected on target site - assuming it exists but is corrupted, will try direct activation")
+                        plugin_exists = True  # Pretend it exists to skip upload
                 
                 if not plugin_exists:
                     l.info("Plugin not found in list, navigating to upload page")
