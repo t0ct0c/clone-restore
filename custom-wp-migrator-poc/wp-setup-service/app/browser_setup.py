@@ -50,7 +50,7 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
         url = url.rstrip('/')
         
         try:
-            async with AsyncCamoufox(headless=True, addons=[]) as browser:
+            async with AsyncCamoufox(headless=True) as browser:
                 # Create a context with realistic fingerprints
                 context = await browser.new_context(
                     viewport={'width': 1280, 'height': 800},

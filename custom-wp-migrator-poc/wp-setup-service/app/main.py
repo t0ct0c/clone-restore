@@ -812,28 +812,25 @@ async def restore_endpoint(request: RestoreRequest):
     
     source_url = str(request.source.url)
     
-    # Check if source is a clone (already has plugin installed with known API key)
+    # Check if source is a clone (uses plain permalinks with query string format)
     is_clone_source = '/clone-' in source_url
     
-    if is_clone_source:
-        # Clone sources already have the plugin - skip browser automation
-        logger.info("Source is a clone - skipping browser setup, using known API key")
-        source_api_key = 'migration-master-key'
-    else:
-        # Regular WordPress site - need browser automation to install plugin
-        source_result = await setup_wordpress_with_browser(
-            source_url,
-            request.source.username,
-            request.source.password,
-            role='source'
+    # Always use browser automation to get the actual API key
+    # Clones inherit their source site's API key, so we need to retrieve it
+    logger.info(f"Setting up source {'(clone)' if is_clone_source else '(regular site)'}...")
+    source_result = await setup_wordpress_with_browser(
+        source_url,
+        request.source.username,
+        request.source.password,
+        role='source'
+    )
+    
+    if not source_result.get('success'):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Source setup failed: {source_result.get('message')}"
         )
-        
-        if not source_result.get('success'):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Source setup failed: {source_result.get('message')}"
-            )
-        source_api_key = source_result['api_key']
+    source_api_key = source_result['api_key']
     
     # Setup target (production)
     logger.info("Setting up target (production)...")
