@@ -34,14 +34,6 @@ graph TD
 
 ## Important Notes
 
-### Clone Plugin Status
-- **Clones inherit their source site's API key** (not `migration-master-key`)
-- The `custom-migrator` plugin may be **inactive** on newly created clones
-- If REST API returns 404, manually activate the plugin:
-  ```bash
-  docker exec <clone-container-id> wp plugin activate custom-migrator --path=/var/www/html --allow-root
-  ```
-
 ### API Key Retrieval
 - The restore endpoint uses browser automation to retrieve the actual API key from clones
 - Clones from bonnel.ai will have bonnel.ai's original API key
@@ -57,7 +49,7 @@ graph TD
 
 ## Postman API Collection
 
-### Request 1: Create Clone
+### Request 1: Create Clone (`/clone` endpoint)
 - **Method**: `POST`
 - **URL**: `http://13.222.20.138:8000/clone`
 - **Headers**: 
@@ -88,7 +80,7 @@ curl -X POST http://13.222.20.138:8000/clone \
 
 ---
 
-### Request 2: Restore Clone to Production
+### Request 2: Restore Clone to Production (`/restore` endpoint)
 - **Method**: `POST`
 - **URL**: `http://13.222.20.138:8000/restore`
 - **Headers**: 
@@ -133,7 +125,7 @@ curl -X POST http://13.222.20.138:8000/restore \
 
 ---
 
-### Request 3: Test Clone REST API Export
+### Request 3: Test Clone REST API Export (WordPress REST API)
 - **Method**: `POST`
 - **URL**: `http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export`
 - **Headers**: 
@@ -149,7 +141,7 @@ curl -X POST \
 
 ---
 
-### Request 4: Health Check
+### Request 4: Health Check (`/health` endpoint)
 - **Method**: `GET`
 - **URL**: `http://13.222.20.138:8000/health`
 - **Headers**: (none needed)
