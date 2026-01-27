@@ -54,6 +54,14 @@ class Custom_Migrator_Importer {
                 $this->create_or_update_admin_user($admin_user, $admin_password);
             }
             
+            // Fix .htaccess for subdirectory installations (clones)
+            if ($target_url_override) {
+                $this->fix_htaccess_for_subdirectory($target_url_override);
+            }
+            
+            // Disable SiteGround plugins that cause redirect loops in subdirectory paths
+            $this->disable_siteground_plugins();
+            
             // Cleanup
             $this->cleanup_temp_dir($extract_dir);
             if ($archive_url) {
@@ -647,6 +655,80 @@ class Custom_Migrator_Importer {
                 )
             );
             $this->log("Created new admin user ID $user_id via SQL");
+        }
+    }
+
+    private function fix_htaccess_for_subdirectory($target_url) {
+        $htaccess_file = ABSPATH . '.htaccess';
+        
+        // Extract path from URL
+        $parsed_url = parse_url($target_url);
+        $path = isset($parsed_url['path']) ? $parsed_url['path'] : '/';
+        
+        // Only apply fix for subdirectory installations
+        if ($path === '/') {
+            $this->log('Root installation detected, skipping .htaccess rewrite');
+            return;
+        }
+        
+        $this->log("Fixing .htaccess for subdirectory installation: $path");
+        
+        // Create minimal .htaccess with DirectoryIndex and proper PHP handling
+        // This prevents download issues while avoiding redirect loops
+        $htaccess_content = "# Minimal .htaccess for subdirectory WordPress\n";
+        $htaccess_content .= "DirectoryIndex index.php index.html\n";
+        $htaccess_content .= "\n";
+        $htaccess_content .= "# Ensure PHP files are executed, not downloaded\n";
+        $htaccess_content .= "<FilesMatch \\.php$>\n";
+        $htaccess_content .= "    SetHandler application/x-httpd-php\n";
+        $htaccess_content .= "</FilesMatch>\n";
+        
+        $result = file_put_contents($htaccess_file, $htaccess_content);
+        if ($result !== false) {
+            $this->log('Successfully created minimal .htaccess (DirectoryIndex only)');
+        } else {
+            $this->log('ERROR: Failed to write .htaccess');
+        }
+        
+        // Set plain permalinks (no rewrite rules needed)
+        // REST API will use query string format: /?rest_route=/endpoint
+        global $wpdb;
+        $wpdb->update(
+            $wpdb->options,
+            array('option_value' => ''),
+            array('option_name' => 'permalink_structure'),
+            array('%s'),
+            array('%s')
+        );
+        $this->log('Set permalink structure to plain (no rewrite rules required)');
+    }
+    
+    private function disable_siteground_plugins() {
+        global $wpdb;
+        
+        // SiteGround plugins that cause redirect loops in subdirectory installations
+        $siteground_plugins = array(
+            'sg-cachepress/sg-cachepress.php',
+            'sg-security/sg-security.php',
+            'wordpress-starter/siteground-wizard.php',
+            'siteground-optimizer/siteground-optimizer.php'
+        );
+        
+        // Get current active plugins
+        $active_plugins = get_option('active_plugins', array());
+        $original_count = count($active_plugins);
+        
+        // Remove SiteGround plugins from active list
+        $active_plugins = array_diff($active_plugins, $siteground_plugins);
+        $active_plugins = array_values($active_plugins); // Re-index array
+        
+        $removed_count = $original_count - count($active_plugins);
+        
+        if ($removed_count > 0) {
+            update_option('active_plugins', $active_plugins);
+            $this->log("Disabled $removed_count SiteGround plugin(s) to prevent redirect loops");
+        } else {
+            $this->log('No SiteGround plugins found to disable');
         }
     }
 
