@@ -32,6 +32,29 @@ graph TD
 
 ---
 
+## Important Notes
+
+### Clone Plugin Status
+- **Clones inherit their source site's API key** (not `migration-master-key`)
+- The `custom-migrator` plugin may be **inactive** on newly created clones
+- If REST API returns 404, manually activate the plugin:
+  ```bash
+  docker exec <clone-container-id> wp plugin activate custom-migrator --path=/var/www/html --allow-root
+  ```
+
+### API Key Retrieval
+- The restore endpoint uses browser automation to retrieve the actual API key from clones
+- Clones from bonnel.ai will have bonnel.ai's original API key
+- Use the `/clone` endpoint response to get the admin password for the clone
+
+### Working Configuration
+- ✅ ALB path-based routing routes each clone to correct EC2 instance
+- ✅ Each EC2 instance has MySQL container (shared database server)
+- ✅ Each WordPress clone gets its own database in MySQL
+- ✅ Restore workflow: Source → Clone → Production works end-to-end
+
+---
+
 ## Postman API Collection
 
 ### Request 1: Create Clone
