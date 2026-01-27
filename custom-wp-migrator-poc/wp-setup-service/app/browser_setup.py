@@ -314,8 +314,14 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
     
                 # Step 3: Activate plugin
                 l.info("Step 3: Activating plugin if inactive")
-                # Wait for plugins table
-                await page.wait_for_selector('.wp-list-table', timeout=30000)
+                # Wait for plugins table - use flexible approach for slow sites
+                try:
+                    await page.wait_for_selector('.wp-list-table, #the-list, .plugins', timeout=30000)
+                except Exception as e:
+                    l.warning(f"Plugins table selector timeout during activation, proceeding anyway: {e}")
+                
+                # Give page time to render
+                await page.wait_for_timeout(3000)
                 
                 plugin_row = page.locator(f"tr[data-slug='{plugin_slug}']")
                 
