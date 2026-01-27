@@ -35,7 +35,7 @@ All core functionality is working. The system can:
 - **Private IP**: 10.0.13.72
 - **Role**: Runs WordPress clone containers
 - **Container ports**: Dynamically assigned (e.g., 8021, 8022, etc.)
-- **Storage**: Each container uses SQLite (no shared MySQL)
+- **Storage**: Each container uses MySQL (shared MySQL container per EC2 instance)
 - **Reverse Proxy**: Nginx for path-based routing
 
 ### Load Balancer
@@ -86,6 +86,90 @@ All core functionality is working. The system can:
 - REST API export: 200 OK with valid JSON response
 - Full restore workflow: Clone → betaweb.ai completed successfully
 
+### ✅ Issue 5: Clone Plugin Inactive After Creation (FIXED - Jan 27, 2026)
+**Problem**: 
+- The `custom-migrator` plugin was inactive on newly created clones
+- REST API endpoints returned 404 "No route was found matching the URL and request method"
+- Export from clones failed, blocking restore workflow
+
+**Root Cause**:
+- Plugin gets deactivated during the clone import process
+- WordPress doesn't automatically activate plugins after database import
+
+**Solution**: 
+- Manually activate the plugin on the clone container:
+  ```bash
+  docker exec <clone-container-id> wp plugin activate custom-migrator --path=/var/www/html --allow-root
+  ```
+- Future fix: Add automatic plugin activation to import process
+
+**Status**: ✅ Plugin activation resolves REST API 404 errors
+**Deployed**: Manual fix applied to clone-20260127-014446
+
+### ✅ Issue 6: Wrong API Key for Clone Sources (FIXED - Jan 27, 2026)
+**Problem**: 
+- Restore endpoint was hardcoding `migration-master-key` for all clone sources
+- Clones created from regular WordPress sites (like bonnel.ai) inherit their source site's API key
+- Restore failed with "Invalid API key" error when trying to export from clone
+
+**Root Cause**:
+- `main.py` restore endpoint (line 821) had hardcoded: `source_api_key = 'migration-master-key'`
+- This assumption was wrong - only clones created via `/provision` endpoint use `migration-master-key`
+- Clones from real sites inherit the source site's original API key
+
+**Solution**: 
+- Modified `main.py` restore endpoint to use browser automation for ALL sources (including clones)
+- Browser automation logs into clone and retrieves the actual API key from settings page
+- Removed hardcoded API key assumption
+
+**Files Changed**:
+- `/custom-wp-migrator-poc/wp-setup-service/app/main.py` (lines 818-833)
+
+**Status**: ✅ Restore endpoint now correctly retrieves API keys from clone sources
+**Deployed**: 2026-01-27, Commit: 1cf947ace97f363599ba7d5e467b6f031c79f4a4
+**Test Results**: Clone-20260127-014446 → betaweb.ai restore completed successfully
+
+### ✅ Issue 7: API Key Validation Too Strict (FIXED - Jan 27, 2026)
+**Problem**: 
+- Browser automation rejected `migration-master-key` (21 characters)
+- Validation only accepted exactly 32-character API keys
+- Sites previously restored from clones had `migration-master-key` and were rejected
+
+**Root Cause**:
+- `browser_setup.py` line 347 had strict validation: `if not api_key or len(api_key) != 32:`
+- This rejected the valid `migration-master-key` used by clone targets
+
+**Solution**: 
+- Updated validation to accept both 32-character keys AND `migration-master-key`
+- New validation: `if not api_key or (len(api_key) != 32 and api_key != 'migration-master-key'):`
+
+**Files Changed**:
+- `/custom-wp-migrator-poc/wp-setup-service/app/browser_setup.py` (line 348)
+
+**Status**: ✅ Browser automation now accepts both API key formats
+**Deployed**: 2026-01-27, Commit: 47aef5fca6dae50fb7293996b02916d94ce7daa8
+
+### ✅ Issue 8: Camoufox Browser Initialization Error (FIXED - Jan 27, 2026)
+**Problem**: 
+- Browser automation failed with: "manifest.json is missing. Addon path must be a path to an extracted addon."
+- Clone endpoint returned 500 error
+- Could not create new clones
+
+**Root Cause**:
+- `browser_setup.py` line 53 had: `async with AsyncCamoufox(headless=True, addons=[]) as browser:`
+- Passing empty `addons=[]` array caused Camoufox to expect valid addon paths
+- Camoufox doesn't accept empty array for addons parameter
+
+**Solution**: 
+- Removed `addons=[]` parameter from AsyncCamoufox initialization
+- Changed to: `async with AsyncCamoufox(headless=True) as browser:`
+
+**Files Changed**:
+- `/custom-wp-migrator-poc/wp-setup-service/app/browser_setup.py` (line 53)
+
+**Status**: ✅ Browser automation initializes correctly
+**Deployed**: 2026-01-27, Commit: 1cf947ace97f363599ba7d5e467b6f031c79f4a4
+
 ### ✅ Issue 2: WordPress Redirect Loop to localhost (FIXED)
 **Solution**: 
 - Created must-use plugin (`force-url-constants.php`) that disables canonical redirects
@@ -114,6 +198,29 @@ All core functionality is working. The system can:
 ## Current Active Issues
 
 None - all core functionality is working.
+
+## Known Limitations & Workarounds
+
+### Limitation 1: Clone Plugin May Be Inactive
+**Issue**: Custom Migrator plugin is sometimes inactive on newly created clones
+**Impact**: REST API returns 404 errors
+**Workaround**: Manually activate plugin via SSH:
+```bash
+ssh to instance → docker exec <clone-id> wp plugin activate custom-migrator --path=/var/www/html --allow-root
+```
+**Permanent Fix**: TODO - Add automatic plugin activation to import process
+
+### Limitation 2: Clone API Keys Vary by Source
+**Issue**: Clones inherit their source site's API key, not a standard key
+**Impact**: Cannot assume all clones use `migration-master-key`
+**Solution**: Restore endpoint uses browser automation to retrieve actual API key
+**Status**: ✅ Fixed in production
+
+### Limitation 3: Browser Automation Required for Restore
+**Issue**: Restore endpoint needs browser automation to get API keys from clones
+**Impact**: Restore process takes longer (60-120 seconds)
+**Workaround**: None - this is by design
+**Future Enhancement**: Store API key in clone metadata to skip browser automation
 
 ## Commands Used
 
@@ -265,7 +372,7 @@ sudo docker exec CONTAINER_NAME tail -20 /var/log/apache2/error.log
 - **Service**: wp-setup-service:latest (FastAPI)
 - **WordPress Image**: wordpress-target-sqlite:latest
   - Latest SHA: `sha256:1d0a35138189a85d43b604f72b104ef2f0a0dd0d07db3ded5d397cb3fe68d3bc`
-- **Database**: SQLite (per-container, no shared MySQL)
+- **Database**: MySQL (shared MySQL container per EC2 instance, separate database per clone)
 - **Loki Logging**: Enabled on management server
 - **Terraform State**: Managed separately in infra/wp-targets/
 
