@@ -241,6 +241,21 @@ resource "aws_iam_role_policy" "wp_targets_custom" {
           "ecr:BatchGetImage"
         ],
         Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "elasticloadbalancing:DescribeRules",
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:CreateRule",
+          "elasticloadbalancing:CreateTargetGroup",
+          "elasticloadbalancing:RegisterTargets",
+          "elasticloadbalancing:ModifyRule",
+          "elasticloadbalancing:DeleteRule",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:DeregisterTargets"
+        ],
+        Resource = "*"
       }
     ]
   })

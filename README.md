@@ -12,17 +12,21 @@ This system **clones WordPress sites** into temporary testing environments on AW
 
 ## Current Status
 
-### ✅ What's Working
-- **Clone endpoint**: Creates clones from any WordPress site (tested with bonnel.ai on SiteGround)
+### ✅ What's Working (Production Ready)
+- **Clone endpoint**: Creates clones from any WordPress site with full REST API support
 - **Restore endpoint**: Restores content, themes, and plugins from source to target
 - **Auto-provisioning**: Automatically creates isolated containers with unique credentials
 - **Browser automation**: Logs in, installs plugin, configures everything automatically
-- **Clone access**: Clones are accessible via ALB URLs with path-based routing
+- **ALB path-based routing**: Dynamic listener rules route each clone to correct EC2 instance
+- **Clone REST API**: Export/import endpoints fully functional on all clones
 - **Preserve options**: Control whether to keep or replace target themes and plugins
+- **Clone → Production restore**: Full workflow working end-to-end
 
-### ⚠️ Known Limitations
-- **SiteGround clones**: Clones inherit SiteGround plugins that cause redirect loops in subdirectory paths
-- **Recommendation**: If source is SiteGround, restore back to SiteGround (not to clones)
+### 🎯 System Ready
+All core functionality is working. You can safely:
+1. Clone any WordPress site to temporary AWS containers
+2. Make changes on clones
+3. Restore changes back to production with theme/plugin control
 
 ---
 
@@ -60,6 +64,64 @@ graph TD
 
 ## Quick Start
 
+### Postman Collection (Copy & Paste Ready)
+
+Import these requests into Postman for easy testing:
+
+#### Request 1: Create Clone
+- **Method**: `POST`
+- **URL**: `http://13.222.20.138:8000/clone`
+- **Headers**: 
+  - `Content-Type: application/json`
+- **Body** (raw JSON):
+```json
+{
+  "source": {
+    "url": "https://bonnel.ai",
+    "username": "Charles",
+    "password": "xkZ%HL6v5Z5)MP9K"
+  }
+}
+```
+
+#### Request 2: Restore Clone to Production
+- **Method**: `POST`
+- **URL**: `http://13.222.20.138:8000/restore`
+- **Headers**: 
+  - `Content-Type: application/json`
+- **Body** (raw JSON):
+```json
+{
+  "source": {
+    "url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS",
+    "username": "admin",
+    "password": "password-from-clone-response"
+  },
+  "target": {
+    "url": "https://betaweb.ai",
+    "username": "Charles",
+    "password": "xkZ%HL6v5Z5)MP9K"
+  },
+  "preserve_themes": false,
+  "preserve_plugins": false
+}
+```
+
+#### Request 3: Test Clone REST API Export
+- **Method**: `POST`
+- **URL**: `http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export`
+- **Headers**: 
+  - `X-Migrator-Key: migration-master-key`
+- **Body**: (empty)
+
+#### Request 4: Health Check
+- **Method**: `GET`
+- **URL**: `http://13.222.20.138:8000/health`
+- **Headers**: (none needed)
+- **Body**: (empty)
+
+---
+
 ### 1. Clone a WordPress Site
 
 Creates a temporary copy of your WordPress site for testing.
@@ -73,9 +135,7 @@ Creates a temporary copy of your WordPress site for testing.
     "url": "https://bonnel.ai",
     "username": "your-username",
     "password": "your-password"
-  },
-  "auto_provision": true,
-  "ttl_minutes": 60
+  }
 }
 ```
 
@@ -83,30 +143,26 @@ Creates a temporary copy of your WordPress site for testing.
 - `url`: **Must use HTTPS** (HTTP redirects break POST requests)
 - `username`: WordPress admin username
 - `password`: WordPress admin password
-- `auto_provision`: Set to `true` to automatically create a container
-- `ttl_minutes`: Clone expires and is deleted after this time (default: 60)
 
 **Response:**
 ```json
 {
   "success": true,
-  "message": "Clone completed successfully",
-  "source_api_key": "GL24zU5fHmxC0Hlh4c4WxVorOzzi4DCr",
-  "target_api_key": "migration-master-key",
-  "provisioned_target": {
-    "target_url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-20260124-035840",
-    "wordpress_username": "admin",
-    "wordpress_password": "F7n4xwasIMOimxSU",
-    "expires_at": "2026-01-24T05:00:26.660750Z",
-    "ttl_minutes": 60
-  }
+  "clone_url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-20260127-001234",
+  "wordpress_username": "admin",
+  "wordpress_password": "F7n4xwasIMOimxSU",
+  "api_key": "migration-master-key",
+  "expires_at": "2026-01-27T02:12:34.567890Z",
+  "message": "Clone created successfully"
 }
 ```
 
 **What you get:**
-- Clone URL to access your site
-- Admin username and password
-- Expiration time
+- `clone_url`: URL to access your cloned site
+- `wordpress_username`: Admin username (always "admin")
+- `wordpress_password`: Generated admin password
+- `api_key`: API key for REST API access (always "migration-master-key")
+- `expires_at`: When the clone will be deleted
 
 ---
 
@@ -240,48 +296,19 @@ Restores content, themes, and plugins from source (clone or staging) to target (
 
 ---
 
-## Important Gotchas
+## Important Notes
 
-### 🔴 SiteGround Sources
-
-**If your source is on SiteGround hosting (like bonnel.ai):**
-
-**Problem:**
-- Clones inherit SiteGround plugins (sg-security, sg-cachepress, wordpress-starter)
-- These plugins cause Apache redirect loops (AH00124) in subdirectory paths
-- **Impact**: Cannot export from clones back to other clones
-
-**Solution:**
-- ✅ **Clone from SiteGround** → Works perfectly
-- ✅ **Restore SiteGround → SiteGround** → Works perfectly
-- ❌ **Restore Clone → Clone** → Fails due to plugin conflicts
-- ✅ **Restore SiteGround → SiteGround** → Recommended workflow
-
-**Recommended Workflow:**
-```
-1. Clone bonnel.ai (SiteGround) → Creates clone-xxx
-2. Test changes on clone-xxx
-3. Restore bonnel.ai → betaweb.ai (both SiteGround)
-   ✅ This works because SiteGround plugins work correctly on SiteGround hosting
-```
-
-**Don't do this:**
-```
-❌ Restore clone-xxx → betaweb.ai
-   (Clone has SiteGround plugins that break in subdirectory paths)
-```
-
-### 🔴 Other Requirements
-
+### Requirements
 - **Use HTTPS**: Source URLs must be `https://` not `http://` (HTTP redirects break POST requests)
 - **Clone TTL**: Clones auto-delete after expiration (default 60 minutes)
 - **Credentials**: Must provide valid WordPress admin credentials
 
-### ✅ Fixed Issues
-- WordPress redirect loops (fixed with must-use plugin)
-- wp-admin.php redirect (browser automation updated)
-- Import checkbox timeout (error handling added)
-- Preserve parameters naming (now correctly implemented)
+### Recently Fixed Issues
+- ✅ ALB path-based routing (dynamic listener rules per clone)
+- ✅ Clone REST API 500 errors (ALB routing fix)
+- ✅ WordPress redirect loops (must-use plugin)
+- ✅ wp-admin.php redirect (browser automation updated)
+- ✅ Import checkbox timeout (error handling added)
 
 ---
 

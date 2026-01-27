@@ -25,12 +25,15 @@ class EC2Provisioner:
         self.ec2_client = boto3.client('ec2', region_name=region)
         self.asg_client = boto3.client('autoscaling', region_name=region)
         self.cloudwatch_client = boto3.client('cloudwatch', region_name=region)
+        self.elbv2_client = boto3.client('elbv2', region_name=region)
         self.region = region
         
         # Configuration (should be environment variables in production)
         self.asg_name = 'wp-targets-asg'
         self.docker_image = '044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest'
         self.alb_dns = 'wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com'
+        self.alb_listener_arn = 'arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/e906e470d368d461'
+        self.target_group_arn = 'arn:aws:elasticloadbalancing:us-east-1:044514005641:targetgroup/wp-targets-tg/08695f0f6e7e5fbf'
         self.management_ip = '10.0.4.2' # Private IP of the management host running Loki/Tempo
         self.ssh_key_path = '/app/ssh/wp-targets-key.pem'
         self.port_range_start = 8001
@@ -135,6 +138,15 @@ class EC2Provisioner:
                     'error_code': 'NGINX_CONFIG_FAILED',
                     'message': 'Failed to configure Nginx'
                 }
+            
+            # 7.5. Create ALB listener rule for path-based routing to this instance
+            instance_id = self._get_instance_id(instance_ip)
+            if instance_id:
+                alb_rule_created = self._create_alb_listener_rule(customer_id, path_prefix, instance_id)
+                if not alb_rule_created:
+                    logger.warning(f"Failed to create ALB listener rule for {path_prefix}, clone may not be accessible via ALB")
+            else:
+                logger.warning(f"Could not determine instance ID for {instance_ip}, skipping ALB rule creation")
             
             # 8. Schedule TTL cleanup
             expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
@@ -712,3 +724,104 @@ define(\\"WP_SITEURL\\", \\"{public_url}\\");" /var/www/html/wp-config.php
         except Exception as e:
             logger.error(f"Direct activation exception: {e}")
             return None
+    
+    def _get_instance_id(self, instance_ip: str) -> Optional[str]:
+        """Get EC2 instance ID from private IP address"""
+        try:
+            response = self.ec2_client.describe_instances(
+                Filters=[
+                    {'Name': 'private-ip-address', 'Values': [instance_ip]},
+                    {'Name': 'instance-state-name', 'Values': ['running']}
+                ]
+            )
+            
+            if response['Reservations'] and response['Reservations'][0]['Instances']:
+                instance_id = response['Reservations'][0]['Instances'][0]['InstanceId']
+                logger.info(f"Found instance ID {instance_id} for IP {instance_ip}")
+                return instance_id
+            
+            logger.warning(f"No running instance found with IP {instance_ip}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get instance ID for {instance_ip}: {e}")
+            return None
+    
+    def _create_alb_listener_rule(self, customer_id: str, path_prefix: str, instance_id: str) -> bool:
+        """Create ALB listener rule to route path to specific instance"""
+        try:
+            # Get current rules to determine priority
+            response = self.elbv2_client.describe_rules(ListenerArn=self.alb_listener_arn)
+            existing_priorities = [int(rule['Priority']) for rule in response['Rules'] if rule['Priority'] != 'default']
+            next_priority = max(existing_priorities) + 1 if existing_priorities else 1
+            
+            logger.info(f"Creating ALB rule with priority {next_priority} for {path_prefix} -> {instance_id}")
+            
+            # Create target group for this specific instance
+            target_group_name = f"clone-{customer_id}"[:32]  # ALB target group names max 32 chars
+            
+            # Check if target group already exists
+            try:
+                tg_response = self.elbv2_client.describe_target_groups(Names=[target_group_name])
+                target_group_arn = tg_response['TargetGroups'][0]['TargetGroupArn']
+                logger.info(f"Using existing target group: {target_group_arn}")
+            except:
+                # Create new target group
+                tg_response = self.elbv2_client.create_target_group(
+                    Name=target_group_name,
+                    Protocol='HTTP',
+                    Port=80,
+                    VpcId=self._get_vpc_id(),
+                    HealthCheckPath='/',
+                    HealthCheckIntervalSeconds=30,
+                    HealthCheckTimeoutSeconds=5,
+                    HealthyThresholdCount=2,
+                    UnhealthyThresholdCount=2,
+                    Matcher={'HttpCode': '200,302'}
+                )
+                target_group_arn = tg_response['TargetGroups'][0]['TargetGroupArn']
+                logger.info(f"Created target group: {target_group_arn}")
+                
+                # Register instance with target group
+                self.elbv2_client.register_targets(
+                    TargetGroupArn=target_group_arn,
+                    Targets=[{'Id': instance_id, 'Port': 80}]
+                )
+                logger.info(f"Registered instance {instance_id} with target group")
+            
+            # Create listener rule for path-based routing
+            self.elbv2_client.create_rule(
+                ListenerArn=self.alb_listener_arn,
+                Priority=next_priority,
+                Conditions=[
+                    {
+                        'Field': 'path-pattern',
+                        'Values': [f"{path_prefix}/*"]
+                    }
+                ],
+                Actions=[
+                    {
+                        'Type': 'forward',
+                        'TargetGroupArn': target_group_arn
+                    }
+                ]
+            )
+            
+            logger.info(f"Successfully created ALB rule for {path_prefix} -> {instance_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to create ALB listener rule: {e}")
+            return False
+    
+    def _get_vpc_id(self) -> str:
+        """Get VPC ID from target group"""
+        try:
+            response = self.elbv2_client.describe_target_groups(
+                TargetGroupArns=[self.target_group_arn]
+            )
+            return response['TargetGroups'][0]['VpcId']
+        except Exception as e:
+            logger.error(f"Failed to get VPC ID: {e}")
+            # Fallback to hardcoded VPC ID from Terraform
+            return 'vpc-03ba82902d6825692'

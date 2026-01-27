@@ -476,11 +476,22 @@ def perform_restore(source_url: str, source_api_key: str, target_url: str, targe
     logger.info(f"Starting restore from {source_url} to {target_url}")
     logger.info(f"Preservation: plugins={preserve_plugins}, themes={preserve_themes}")
     
+    # Check if source is a clone (uses plain permalinks with query string format)
+    is_clone_source = '/clone-' in source_url
+    
     try:
         # Step 1: Export from source (staging/backup)
         logger.info("Exporting from source...")
+        
+        # Use query string format for clones (plain permalinks), pretty permalinks for others
+        if is_clone_source:
+            export_url = f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/export"
+        else:
+            export_url = f"{source_url.rstrip('/')}/wp-json/custom-migrator/v1/export"
+        
+        logger.info(f"Export URL: {export_url}")
         export_response = requests.post(
-            f"{source_url}/wp-json/custom-migrator/v1/export",
+            export_url,
             headers={'X-Migrator-Key': source_api_key},
             timeout=TIMEOUT
         )
@@ -799,19 +810,30 @@ async def restore_endpoint(request: RestoreRequest):
     logger.info(f"Restore requested: {request.source.url} -> {request.target.url}")
     logger.info(f"Options: preserve_plugins={request.preserve_plugins}, preserve_themes={request.preserve_themes}")
     
-    # Setup source (staging/backup)
-    source_result = await setup_wordpress_with_browser(
-        str(request.source.url),
-        request.source.username,
-        request.source.password,
-        role='source'
-    )
+    source_url = str(request.source.url)
     
-    if not source_result.get('success'):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Source setup failed: {source_result.get('message')}"
+    # Check if source is a clone (already has plugin installed with known API key)
+    is_clone_source = '/clone-' in source_url
+    
+    if is_clone_source:
+        # Clone sources already have the plugin - skip browser automation
+        logger.info("Source is a clone - skipping browser setup, using known API key")
+        source_api_key = 'migration-master-key'
+    else:
+        # Regular WordPress site - need browser automation to install plugin
+        source_result = await setup_wordpress_with_browser(
+            source_url,
+            request.source.username,
+            request.source.password,
+            role='source'
         )
+        
+        if not source_result.get('success'):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Source setup failed: {source_result.get('message')}"
+            )
+        source_api_key = source_result['api_key']
     
     # Setup target (production)
     logger.info("Setting up target (production)...")
@@ -830,8 +852,8 @@ async def restore_endpoint(request: RestoreRequest):
     
     # Perform restore with preservation options
     restore_result = perform_restore(
-        str(request.source.url),
-        source_result['api_key'],
+        source_url,
+        source_api_key,
         str(request.target.url),
         target_result['api_key'],
         preserve_plugins=request.preserve_plugins,
@@ -851,7 +873,7 @@ async def restore_endpoint(request: RestoreRequest):
     return RestoreResponse(
         success=True,
         message="Restore completed successfully",
-        source_api_key=source_result['api_key'],
+        source_api_key=source_api_key,
         target_api_key=target_result['api_key'],
         integrity=restore_result.get('integrity'),
         options=restore_result.get('options')
