@@ -357,11 +357,19 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                     # Log the list of plugins found for debugging
                     all_plugins = await page.locator('tr[data-slug]').evaluate_all("(rows) => rows.map(r => r.getAttribute('data-slug'))")
                     l.info(f"Installed plugins: {all_plugins}")
-                    return {
-                        'success': False,
-                        'error_code': 'PLUGIN_ROW_NOT_FOUND',
-                        'message': f'Plugin row for {plugin_slug} not found'
-                    }
+                    
+                    if role == 'target':
+                        return {
+                            'success': False,
+                            'error_code': 'PLUGIN_NOT_INSTALLED',
+                            'message': f'The custom-migrator plugin is not installed on {url}. Please install it manually first: 1) Download plugin.zip from the management server, 2) Upload via WordPress admin > Plugins > Add New > Upload Plugin, 3) Activate the plugin, then retry the restore.'
+                        }
+                    else:
+                        return {
+                            'success': False,
+                            'error_code': 'PLUGIN_ROW_NOT_FOUND',
+                            'message': f'Plugin row for {plugin_slug} not found'
+                        }
                 
                 # Step 4: Get API key from plugin settings
                 l.info("Step 4: Navigating to plugin settings to retrieve API key")
