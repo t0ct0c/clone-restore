@@ -4,6 +4,7 @@ Browser-based WordPress setup using Playwright for target instances
 from loguru import logger
 import os
 import asyncio
+import time
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from camoufox.async_api import AsyncCamoufox
 from typing import Optional
@@ -145,19 +146,49 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 l.info("Step 2: Checking if plugin needs upload on plugins page")
                 await page.goto(f"{url}/wp-admin/plugins.php", wait_until="domcontentloaded", timeout=90000)
                 
-                plugin_slug = 'custom-migrator'
-                # Wait for page to be ready - use multiple possible selectors
-                try:
-                    await page.wait_for_selector('.wp-list-table, #the-list, .plugins', timeout=30000)
-                    l.info("Plugins table loaded successfully")
-                except Exception as e:
-                    l.warning(f"Plugins table selector timeout, checking content anyway: {e}")
+                # Check if we got redirected back to login (session lost)
+                if "wp-login.php" in page.url:
+                    l.error(f"Session lost after navigating to plugins page - redirected to: {page.url}")
+                    return {
+                        'success': False,
+                        'error_code': 'SESSION_LOST',
+                        'message': f'WordPress session was invalidated after login. This is likely due to a security plugin on {url} detecting and blocking automated browsers. The site may need to whitelist the automation IP or disable bot detection for this workflow to work.'
+                    }
                 
                 # Give slow sites extra time to fully render (betaweb.ai needs this)
-                l.info("Waiting 5 seconds for page to fully render...")
-                await page.wait_for_timeout(5000)
+                l.info("Waiting for plugin rows to render...")
+                try:
+                    await page.wait_for_selector('tr[data-slug]', timeout=45000)
+                    l.info("Plugin rows detected")
+                except Exception as e:
+                    l.warning(f"Plugin rows timeout after 45s, checking anyway: {e}")
+                
+                # Additional wait for JavaScript to finish rendering
+                await page.wait_for_timeout(3000)
+                
+                # DEBUG: Capture what we're actually seeing
+                if role == 'target':
+                    try:
+                        screenshot_path = f"/tmp/betaweb_plugins_{int(time.time())}.png"
+                        await page.screenshot(path=screenshot_path)
+                        l.info(f"DEBUG: Screenshot saved to {screenshot_path}")
+                        
+                        # Get the plugins table HTML
+                        plugins_table_html = await page.locator('#the-list').inner_html()
+                        l.info(f"DEBUG: Plugins table HTML length: {len(plugins_table_html)} chars")
+                        
+                        # Check what rows exist
+                        all_rows = await page.locator('#the-list tr').count()
+                        l.info(f"DEBUG: Total rows in #the-list: {all_rows}")
+                        
+                        # Check for any text containing "Custom"
+                        custom_text = await page.locator('body').evaluate("el => el.innerText.includes('Custom WP Migrator')")
+                        l.info(f"DEBUG: Page contains 'Custom WP Migrator' text: {custom_text}")
+                    except Exception as debug_err:
+                        l.warning(f"DEBUG: Error during debugging: {debug_err}")
                 
                 # Check if plugin is already installed using proper selectors
+                plugin_slug = 'custom-migrator'
                 plugin_exists = False
                 plugin_row = page.locator(f"tr[data-slug='{plugin_slug}']")
                 count1 = await plugin_row.count()
