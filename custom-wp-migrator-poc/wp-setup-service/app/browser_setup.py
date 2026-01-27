@@ -154,9 +154,21 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 
                 # Give page extra time to settle if needed
                 await page.wait_for_timeout(2000)
-                content = await page.content()
                 
-                if plugin_slug not in content:
+                # Check if plugin is already installed using proper selectors
+                plugin_exists = False
+                plugin_row = page.locator(f"tr[data-slug='{plugin_slug}']")
+                if await plugin_row.count() == 0:
+                    # Try fallback selectors
+                    plugin_row = page.locator("tr[data-slug='custom-migrator.php']")
+                    if await plugin_row.count() == 0:
+                        plugin_row = page.locator("tr:has-text('Custom WP Migrator')")
+                
+                if await plugin_row.count() > 0:
+                    plugin_exists = True
+                    l.info("Plugin already installed, skipping upload")
+                
+                if not plugin_exists:
                     l.info("Plugin not found in list, navigating to upload page")
                     await page.goto(f"{url}/wp-admin/plugin-install.php?tab=upload", wait_until="networkidle", timeout=60000)
                     
