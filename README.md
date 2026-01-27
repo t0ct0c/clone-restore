@@ -6,17 +6,28 @@
 graph TD
     A["User / API Client"] --> B["ALB<br/>wp-targets-alb-*.elb.amazonaws.com<br/>(Path-based routing)"]
     
-    B -->|"/clone-xxx/*"| C["EC2 Instance 1<br/>Nginx + Containers"]
-    B -->|"/clone-yyy/*"| D["EC2 Instance 2<br/>Nginx + Containers"]
-    B -->|"/clone-zzz/*"| E["EC2 Instance 3<br/>Nginx + Containers"]
+    B -->|"/clone-xxx/*"| C["EC2 Instance 1"]
+    B -->|"/clone-yyy/*"| D["EC2 Instance 2"]
+    B -->|"/clone-zzz/*"| E["EC2 Instance 3"]
     
-    C --> F["WordPress Container<br/>clone-xxx<br/>(SQLite DB)"]
-    D --> G["WordPress Container<br/>clone-yyy<br/>(SQLite DB)"]
-    E --> H["WordPress Container<br/>clone-zzz<br/>(SQLite DB)"]
+    C --> F["Nginx"]
+    C --> G["MySQL Container"]
+    F --> H["WordPress clone-xxx"]
+    H --> G
     
-    I["Management Server<br/>13.222.20.138:8000"] --> J["Browser Automation<br/>(Playwright)"]
-    J --> K["Source WordPress<br/>(e.g., bonnel.ai)"]
-    I --> B
+    D --> I["Nginx"]
+    D --> J["MySQL Container"]
+    I --> K["WordPress clone-yyy"]
+    K --> J
+    
+    E --> L["Nginx"]
+    E --> M["MySQL Container"]
+    L --> N["WordPress clone-zzz"]
+    N --> M
+    
+    O["Management Server<br/>13.222.20.138:8000"] --> P["Browser Automation<br/>(Playwright)"]
+    P --> Q["Source WordPress<br/>(e.g., bonnel.ai)"]
+    O --> B
 ```
 
 ---
