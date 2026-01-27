@@ -197,7 +197,113 @@ All core functionality is working. The system can:
 
 ## Current Active Issues
 
-None - all core functionality is working.
+### ⚠️ Issue 9: betaweb.ai Restore Blocked by Security Plugin (ACTIVE - Jan 27, 2026)
+**Problem**: 
+- Restore endpoint fails when trying to restore to betaweb.ai (production site)
+- Multiple timeout and session loss errors observed
+- Browser automation cannot access plugins page on betaweb.ai
+- Screenshot debugging shows browser stuck on login page, never reaching plugins.php
+
+**Symptoms**:
+1. Initial error: "Authentication session lost while navigating to upload"
+2. Then: "Browser automation timed out: Timeout 30000ms exceeded"
+3. Finally: "The custom-migrator plugin is not installed on https://betaweb.ai"
+4. Screenshot shows browser on wp-login.php with username "charles" filled in
+5. URL shows `reauth=1` parameter indicating WordPress forced re-authentication
+
+**Root Cause**:
+- betaweb.ai has **Security Optimizer** plugin (by SiteGround) installed
+- Security plugin detects headless browser automation and blocks/invalidates sessions
+- After successful login, WordPress invalidates session when navigating to plugins.php
+- Browser gets redirected back to wp-login.php with `reauth=1` parameter
+- Plugins page never loads, so automation sees empty plugin list
+
+**Investigation Timeline**:
+1. **Initial assumption**: Slow page loading (30+ second timeouts)
+   - Added flexible selectors, increased timeouts to 45s, 90s
+   - Did not resolve issue
+   
+2. **Second assumption**: Plugin in corrupted "Deleting..." state
+   - User showed plugins page with Custom WP Migrator showing "Activate | Deleting..."
+   - Added workaround to skip upload for target sites
+   - Did not resolve issue
+   
+3. **Third assumption**: Plugin detection selectors wrong
+   - Added debug logging to check all selectors
+   - Logs showed: `Installed plugins: []` - completely empty
+   - User confirmed plugins ARE visible when manually accessing betaweb.ai
+   
+4. **Root cause discovered**: Screenshot debugging revealed truth
+   - Added screenshot capture and HTML dump
+   - Screenshot shows browser stuck on wp-login.php, never reached plugins.php
+   - Session was invalidated by Security Optimizer after initial login
+   - This is NOT a timeout issue - it's active bot detection blocking automation
+
+**Current Camoufox Configuration**:
+```python
+async with AsyncCamoufox(headless=True) as browser:
+    context = await browser.new_context(
+        viewport={'width': 1280, 'height': 800},
+        accept_downloads=True
+    )
+```
+
+**Camoufox Features NOT Currently Used**:
+- `humanize=True` - Adds realistic human-like behavior (mouse movements, typing delays)
+- `geoip=True` - Uses real geolocation data
+- `fonts=True` - Loads real system fonts to avoid font fingerprinting
+- Custom user agent configuration
+- Non-headless mode with virtual display (Xvfb)
+
+**Attempted Fixes**:
+- ✅ Increased timeouts from 30s → 45s → 90s (did not help)
+- ✅ Added flexible selector approach with multiple fallbacks (did not help)
+- ✅ Skip plugin upload for target sites to avoid session loss (did not help)
+- ✅ Added debug logging and screenshot capture (revealed root cause)
+- ✅ Added session loss detection after plugins.php navigation (now reports clear error)
+
+**Potential Solutions** (Not Yet Implemented):
+1. **Configure betaweb.ai Security Optimizer**:
+   - Whitelist management server IP (13.222.20.138)
+   - Disable bot detection for authenticated admin sessions
+   - Add automation user-agent to allowlist
+   
+2. **Enhance Camoufox Anti-Detection**:
+   - Enable `humanize=True` for realistic behavior
+   - Use non-headless mode with Xvfx virtual display
+   - Add custom user agent that mimics real browser
+   - Enable additional fingerprinting protection
+   
+3. **Alternative Approach**:
+   - Use WordPress CLI via SSH if betaweb.ai allows remote access
+   - Pre-install custom-migrator plugin on betaweb.ai manually (one-time setup)
+   - Use WordPress REST API authentication tokens instead of browser automation
+
+**Status**: 🔴 **BLOCKED** - Cannot restore to betaweb.ai until security plugin configuration is changed
+**Impact**: High - Blocks production restore workflow to betaweb.ai
+**Workaround**: None - requires site configuration change or enhanced anti-detection
+**Next Steps**: 
+1. User needs to configure betaweb.ai Security Optimizer to allow automation
+2. OR: Implement enhanced Camoufox anti-detection features
+3. OR: Manual one-time plugin installation on betaweb.ai
+
+**Files Modified**:
+- `browser_setup.py` - Added debug logging, screenshot capture, session loss detection
+- Multiple timeout increases and selector improvements (did not resolve issue)
+
+**Commits**:
+- `3e54b74` - Flexible selector strategy for slow-loading plugins pages
+- `81a6c75` - Improved plugin detection with proper DOM selectors
+- `3241da0` - Flexible selector approach during plugin activation
+- `8e57ac3` - Skip plugin upload for target sites to avoid session loss
+- `05cd34f` - Actionable error message when plugin not installed on target
+- `a017c89` - Detect and report session loss when WordPress redirects to login
+
+**Key Learning**: 
+- Timeout increases don't solve security plugin blocking
+- Screenshot debugging is essential to see what automation actually sees vs what users see
+- Production sites with security plugins may actively block headless browser automation
+- Camoufox has advanced anti-detection features we're not currently using
 
 ## Known Limitations & Workarounds
 
