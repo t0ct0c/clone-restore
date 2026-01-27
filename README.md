@@ -4,23 +4,19 @@
 
 ```mermaid
 graph TD
-    A["User / API Client"] --> B["Management Server<br/>13.222.20.138:8000"]
+    A["User / API Client"] --> B["ALB<br/>wp-targets-alb-*.elb.amazonaws.com<br/>(Path-based routing)"]
     
-    B --> C["Browser Automation<br/>(Playwright)"]
-    C --> D["Source WordPress<br/>(e.g., bonnel.ai)"]
+    B -->|"/clone-xxx/*"| C["EC2 Instance 1<br/>Nginx + Containers"]
+    B -->|"/clone-yyy/*"| D["EC2 Instance 2<br/>Nginx + Containers"]
+    B -->|"/clone-zzz/*"| E["EC2 Instance 3<br/>Nginx + Containers"]
     
-    B --> E["Target EC2<br/>10.0.13.72"]
-    E --> F["MySQL Container<br/>(Shared DB)"]
-    E --> G["Clone Container 1<br/>(WordPress + Apache)"]
-    E --> H["Clone Container 2<br/>(WordPress + Apache)"]
-    E --> I["Nginx<br/>(Reverse Proxy)"]
+    C --> F["WordPress Container<br/>clone-xxx<br/>(SQLite DB)"]
+    D --> G["WordPress Container<br/>clone-yyy<br/>(SQLite DB)"]
+    E --> H["WordPress Container<br/>clone-zzz<br/>(SQLite DB)"]
     
-    J["ALB<br/>wp-targets-alb-*.elb.amazonaws.com"] --> I
-    I --> G
-    I --> H
-    
-    G --> F
-    H --> F
+    I["Management Server<br/>13.222.20.138:8000"] --> J["Browser Automation<br/>(Playwright)"]
+    J --> K["Source WordPress<br/>(e.g., bonnel.ai)"]
+    I --> B
 ```
 
 ---
