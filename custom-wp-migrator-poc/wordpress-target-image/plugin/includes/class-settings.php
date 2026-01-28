@@ -24,11 +24,53 @@ class Custom_Migrator_Settings {
     public static function register_settings() {
         register_setting('custom_migrator_settings', 'custom_migrator_api_key');
         register_setting('custom_migrator_settings', 'custom_migrator_allow_import');
+        
+        // Handle plugin reset
+        add_action('admin_post_custom_migrator_reset', array(__CLASS__, 'handle_reset'));
+    }
+    
+    public static function handle_reset() {
+        if (!current_user_can('manage_options')) {
+            wp_die('Unauthorized');
+        }
+        
+        check_admin_referer('custom_migrator_reset');
+        
+        // Delete all plugin options
+        delete_option('custom_migrator_api_key');
+        delete_option('custom_migrator_allow_import');
+        
+        // Regenerate API key
+        $new_api_key = bin2hex(random_bytes(16));
+        update_option('custom_migrator_api_key', $new_api_key);
+        update_option('custom_migrator_allow_import', false);
+        
+        // Clear any cached plugin data
+        wp_cache_flush();
+        
+        // Force REST API routes to re-register
+        delete_option('rewrite_rules');
+        flush_rewrite_rules();
+        
+        // Redirect back with success message
+        wp_redirect(add_query_arg(
+            array(
+                'page' => 'custom-migrator-settings',
+                'reset' => 'success'
+            ),
+            admin_url('options-general.php')
+        ));
+        exit;
     }
     
     public static function render_settings_page() {
         if (!current_user_can('manage_options')) {
             return;
+        }
+        
+        // Show reset success message
+        if (isset($_GET['reset']) && $_GET['reset'] === 'success') {
+            echo '<div class="notice notice-success is-dismissible"><p><strong>Plugin reset successfully!</strong> New API key generated and REST API routes refreshed.</p></div>';
         }
         
         $api_key = get_option('custom_migrator_api_key');
@@ -81,6 +123,29 @@ class Custom_Migrator_Settings {
                 </table>
                 
                 <?php submit_button(); ?>
+            </form>
+            
+            <hr />
+            
+            <h2>Plugin Recovery</h2>
+            <p>If the plugin is not working correctly (REST API returns 404, session issues, etc.), use this reset button to restore it to default state.</p>
+            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>" 
+                  onsubmit="return confirm('This will reset the plugin to default state and generate a new API key. Continue?');">
+                <input type="hidden" name="action" value="custom_migrator_reset" />
+                <?php wp_nonce_field('custom_migrator_reset'); ?>
+                <button type="submit" class="button button-secondary" style="color: #d63638;">
+                    🔄 Reset Plugin to Default State
+                </button>
+                <p class="description">
+                    This will:
+                    <ul style="margin-left: 20px;">
+                        <li>Delete all plugin settings</li>
+                        <li>Generate a new API key</li>
+                        <li>Disable import functionality</li>
+                        <li>Refresh REST API routes</li>
+                        <li>Clear WordPress cache</li>
+                    </ul>
+                </p>
             </form>
             
             <hr />

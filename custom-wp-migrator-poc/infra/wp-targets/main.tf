@@ -314,7 +314,7 @@ resource "aws_launch_template" "wp_targets" {
   block_device_mappings {
     device_name = "/dev/xvda"
     ebs {
-      volume_size = 50
+      volume_size = 100  # Increased for Camoufox font cache (~1.3GB per image)
       volume_type = "gp3"
     }
   }
