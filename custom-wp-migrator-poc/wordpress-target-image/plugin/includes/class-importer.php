@@ -62,6 +62,9 @@ class Custom_Migrator_Importer {
             // Disable SiteGround plugins that cause redirect loops in subdirectory paths
             $this->disable_siteground_plugins();
             
+            // Ensure custom-migrator plugin is active after restore (prevents corruption)
+            $this->ensure_custom_migrator_active();
+            
             // Cleanup
             $this->cleanup_temp_dir($extract_dir);
             if ($archive_url) {
@@ -729,6 +732,27 @@ class Custom_Migrator_Importer {
             $this->log("Disabled $removed_count SiteGround plugin(s) to prevent redirect loops");
         } else {
             $this->log('No SiteGround plugins found to disable');
+        }
+    }
+    
+    private function ensure_custom_migrator_active() {
+        // Critical: Ensure custom-migrator plugin is active after restore
+        // Source database may have it inactive, causing corruption on target
+        $plugin_path = 'custom-migrator/custom-migrator.php';
+        
+        // Get current active plugins
+        $active_plugins = get_option('active_plugins', array());
+        
+        // Check if custom-migrator is already active
+        if (!in_array($plugin_path, $active_plugins)) {
+            // Add to active plugins list
+            $active_plugins[] = $plugin_path;
+            $active_plugins = array_values($active_plugins); // Re-index array
+            
+            update_option('active_plugins', $active_plugins);
+            $this->log('CRITICAL: Activated custom-migrator plugin to prevent corruption');
+        } else {
+            $this->log('Custom-migrator plugin already active');
         }
     }
 

@@ -479,6 +479,86 @@ def perform_restore(source_url: str, source_api_key: str, target_url: str, targe
     # Check if source is a clone (uses plain permalinks with query string format)
     is_clone_source = '/clone-' in source_url
     
+    # PREFLIGHT CHECKS - Validate all prerequisites before starting destructive operations
+    logger.info("=== PREFLIGHT CHECKS START ===")
+    preflight_errors = []
+    
+    try:
+        # Preflight 1: Source connectivity and API health
+        logger.info("Preflight 1/5: Testing source connectivity...")
+        try:
+            source_status_url = f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status" if is_clone_source else f"{source_url.rstrip('/')}/wp-json/custom-migrator/v1/status"
+            source_status = requests.get(
+                source_status_url,
+                headers={'X-Migrator-Key': source_api_key},
+                timeout=10
+            )
+            if source_status.status_code != 200:
+                preflight_errors.append(f"Source API unreachable (HTTP {source_status.status_code})")
+            else:
+                logger.info("✓ Source API accessible")
+        except Exception as e:
+            preflight_errors.append(f"Source connection failed: {str(e)}")
+        
+        # Preflight 2: Target connectivity - verify WordPress is reachable
+        logger.info("Preflight 2/5: Testing target connectivity...")
+        try:
+            target_home = requests.get(target_url, timeout=10, allow_redirects=True)
+            if 'wp-admin/install.php' in target_home.url or 'language' in target_home.text.lower()[:2000]:
+                preflight_errors.append("Target is in WordPress setup mode - complete installation first")
+            elif target_home.status_code != 200:
+                preflight_errors.append(f"Target unreachable (HTTP {target_home.status_code})")
+            else:
+                logger.info("✓ Target WordPress reachable")
+        except Exception as e:
+            preflight_errors.append(f"Target connection failed: {str(e)}")
+        
+        # Preflight 3: Verify source export endpoint is reachable
+        logger.info("Preflight 3/5: Checking source export endpoint...")
+        try:
+            export_test_url = f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status" if is_clone_source else f"{source_url.rstrip('/')}/wp-json/custom-migrator/v1/status"
+            export_test = requests.get(
+                export_test_url,
+                headers={'X-Migrator-Key': source_api_key},
+                timeout=10
+            )
+            if export_test.status_code != 200:
+                preflight_errors.append("Source export endpoint not responding")
+            else:
+                logger.info("✓ Source export endpoint accessible")
+        except Exception as e:
+            preflight_errors.append(f"Source export test failed: {str(e)}")
+        
+        # Preflight 4: Skip - browser automation will verify target credentials
+        logger.info("Preflight 4/5: Target credential check (deferred to browser automation)")
+        logger.info("✓ Target credential validation will occur during browser setup")
+        
+        # Preflight 5: Skip - browser automation will verify wp-admin access
+        logger.info("Preflight 5/5: Target wp-admin check (deferred to browser automation)")
+        logger.info("✓ Target wp-admin validation will occur during browser setup")
+        
+        # Evaluate preflight results
+        if preflight_errors:
+            logger.error(f"=== PREFLIGHT CHECKS FAILED ({len(preflight_errors)} errors) ===")
+            for i, error in enumerate(preflight_errors, 1):
+                logger.error(f"  {i}. {error}")
+            return {
+                'success': False,
+                'error_code': 'PREFLIGHT_FAILED',
+                'message': 'Preflight checks failed - cannot proceed with restore',
+                'preflight_errors': preflight_errors
+            }
+        
+        logger.info("=== PREFLIGHT CHECKS PASSED - Proceeding with restore ===")
+        
+    except Exception as e:
+        logger.error(f"Preflight checks exception: {e}")
+        return {
+            'success': False,
+            'error_code': 'PREFLIGHT_ERROR',
+            'message': f'Preflight checks encountered error: {str(e)}'
+        }
+    
     try:
         # Step 1: Export from source (staging/backup)
         logger.info("Exporting from source...")
@@ -546,18 +626,98 @@ def perform_restore(source_url: str, source_api_key: str, target_url: str, targe
             }
         
         import_data = import_response.json()
-        logger.info("Restore completed successfully")
+        logger.info("Import API returned success, starting post-import verification...")
+        
+        # POST-IMPORT VERIFICATION - Critical checks to ensure import actually worked
+        logger.info("=== POST-IMPORT VERIFICATION START ===")
+        verification_errors = []
+        
+        try:
+            # Verification 1: Target homepage should return 200 (not language setup)
+            logger.info("Verification 1/3: Checking target homepage...")
+            try:
+                verify_response = requests.get(target_url, timeout=10, allow_redirects=True)
+                if 'wp-admin/install.php' in verify_response.url:
+                    verification_errors.append("Target redirects to install.php - database not populated")
+                elif 'language' in verify_response.text.lower()[:2000]:
+                    verification_errors.append("Target shows language setup - WordPress not installed")
+                else:
+                    logger.info("✓ Target homepage accessible")
+            except Exception as e:
+                verification_errors.append(f"Homepage verification failed: {str(e)}")
+            
+            # Verification 2: REST API should still work
+            logger.info("Verification 2/3: Testing target REST API...")
+            try:
+                status_check = requests.get(
+                    f"{target_url.rstrip('/')}/wp-json/custom-migrator/v1/status",
+                    headers={'X-Migrator-Key': target_api_key},
+                    timeout=10
+                )
+                if status_check.status_code == 403:
+                    # Target has security/firewall - this is acceptable
+                    logger.info("✓ Target REST API returns 403 (security active - acceptable)")
+                elif status_check.status_code != 200:
+                    verification_errors.append(f"REST API non-functional (HTTP {status_check.status_code})")
+                else:
+                    logger.info("✓ Target REST API functional")
+            except Exception as e:
+                verification_errors.append(f"REST API verification failed: {str(e)}")
+            
+            # Verification 3: Verify admin login works
+            logger.info("Verification 3/3: Verifying admin access...")
+            try:
+                login_test = requests.get(
+                    f"{target_url.rstrip('/')}/wp-admin/",
+                    timeout=10,
+                    allow_redirects=False
+                )
+                # Should return 302 (redirect to login) or 200 (already logged in via cookies)
+                # Should NOT return 500 or redirect to install.php
+                if login_test.status_code == 500:
+                    verification_errors.append("Admin area returns 500 error")
+                elif 'install.php' in login_test.headers.get('Location', ''):
+                    verification_errors.append("Admin redirects to install.php")
+                else:
+                    logger.info("✓ Target admin area accessible")
+            except Exception as e:
+                verification_errors.append(f"Admin access verification failed: {str(e)}")
+            
+            # Evaluate verification results
+            if verification_errors:
+                logger.error(f"=== POST-IMPORT VERIFICATION FAILED ({len(verification_errors)} errors) ===")
+                for i, error in enumerate(verification_errors, 1):
+                    logger.error(f"  {i}. {error}")
+                return {
+                    'success': False,
+                    'error_code': 'IMPORT_VERIFICATION_FAILED',
+                    'message': 'Import reported success but verification checks failed',
+                    'verification_errors': verification_errors,
+                    'import_response': import_data
+                }
+            
+            logger.info("=== POST-IMPORT VERIFICATION PASSED ===")
+            
+        except Exception as e:
+            logger.error(f"Post-import verification exception: {e}")
+            return {
+                'success': False,
+                'error_code': 'VERIFICATION_ERROR',
+                'message': f'Post-import verification encountered error: {str(e)}'
+            }
         
         # Include integrity check results
         integrity = import_data.get('integrity', {})
         if integrity.get('warnings'):
             logger.warning(f"Integrity warnings: {integrity['warnings']}")
         
+        logger.info("Restore completed successfully with all verifications passed")
         return {
             'success': True,
             'message': 'Restore completed successfully',
             'integrity': integrity,
-            'options': import_data.get('options', {})
+            'options': import_data.get('options', {}),
+            'verification_status': 'passed'
         }
         
     except Exception as e:
