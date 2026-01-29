@@ -1,5 +1,44 @@
 # WordPress Clone & Restore System
 
+## How It Works (Simple Overview)
+
+This system lets you safely clone a WordPress site, make changes, and restore those changes back to production.
+
+```mermaid
+flowchart TD
+    Start(["User wants to test changes"]) --> Clone["1. Clone Production Site<br/>POST /clone<br/>Creates temporary copy"]
+    Clone --> CloneReady["Clone Ready<br/>Get URL + credentials"]
+    CloneReady --> MakeChanges["2. Make Changes on Clone<br/>Test features, update content"]
+    MakeChanges --> Satisfied{"Changes look good?"}
+    Satisfied -->|"Yes"| Restore["3. Restore to Production<br/>POST /restore<br/>Applies changes"]
+    Satisfied -->|"No"| MakeChanges
+    Restore --> Verify["4. System Verifies<br/>Checks database populated<br/>Confirms site working"]
+    Verify --> Success(["Production Updated!"])
+    
+    style Clone fill:#e1f5ff
+    style MakeChanges fill:#fff4e1
+    style Restore fill:#ffe1f5
+    style Verify fill:#e1ffe1
+    style Success fill:#90EE90
+```
+
+### What Happens Behind the Scenes
+
+**Clone Step:**
+- Browser logs into your WordPress site
+- Installs migration plugin automatically
+- Creates isolated copy on AWS
+- Returns clone URL and admin credentials
+
+**Restore Step:**
+- Runs preflight checks (source accessible? target ready?)
+- Exports data from clone
+- Imports to production
+- Verifies database populated and site working
+- Returns success only if all checks pass
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -48,6 +87,12 @@ graph TD
 ---
 
 ## Postman API Collection
+
+## Quick Start
+
+### Step 1: Create a Clone
+
+**What it does:** Creates a temporary copy of your WordPress site where you can safely test changes.
 
 ### Request 1: Create Clone (`/clone` endpoint)
 - **Method**: `POST`
