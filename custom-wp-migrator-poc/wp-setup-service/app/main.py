@@ -27,7 +27,7 @@ from .wp_auth import WordPressAuthenticator
 from .wp_plugin import WordPressPluginInstaller
 from .wp_options import WordPressOptionsFetcher
 from .ec2_provisioner import EC2Provisioner
-from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser
+from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser, create_application_password
 
 
 # Configure loguru
@@ -150,6 +150,21 @@ class RestoreResponse(BaseModel):
     target_api_key: Optional[str] = None
     integrity: Optional[Dict] = None
     options: Optional[Dict] = None
+
+
+class CreateAppPasswordRequest(BaseModel):
+    url: HttpUrl
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    app_name: Optional[str] = Field("WP Migrator", min_length=1, max_length=100)
+
+
+class CreateAppPasswordResponse(BaseModel):
+    success: bool
+    application_password: Optional[str] = None
+    app_name: Optional[str] = None
+    message: str
+    error_code: Optional[str] = None
 
 
 # Helper Functions
@@ -799,6 +814,69 @@ async def setup_endpoint(request: SetupRequest):
     return SetupResponse(**result)
 
 
+@app.post("/create-app-password", response_model=CreateAppPasswordResponse)
+async def create_app_password_endpoint(request: CreateAppPasswordRequest):
+    """
+    Create WordPress Application Password via browser automation.
+    
+    This standalone utility endpoint generates an Application Password for
+    a WordPress site, enabling REST API authentication without manual
+    wp-admin access.
+    
+    Requirements:
+    - WordPress 5.6+ (Application Passwords feature)
+    - User must have permission to create application passwords
+    - Application passwords must be enabled on the site
+    
+    Returns the generated password that can be used for REST API authentication.
+    """
+    logger.info("🔐 ========================================")
+    logger.info("🔐 [CREATE-APP-PASSWORD] Request received")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] URL: {request.url}")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] Username: {request.username}")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] App name: {request.app_name}")
+    logger.info("🔐 ========================================")
+    
+    result = await create_application_password(
+        str(request.url),
+        request.username,
+        request.password,
+        request.app_name
+    )
+    
+    if not result.get('success'):
+        # Map error codes to appropriate HTTP status codes
+        error_code = result.get('error_code', 'UNKNOWN_ERROR')
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ FAILED with error code: {error_code}")
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ Error message: {result.get('message')}")
+        
+        status_code = {
+            'LOGIN_FAILED': status.HTTP_401_UNAUTHORIZED,
+            'LOGIN_ERROR': status.HTTP_401_UNAUTHORIZED,
+            'SESSION_LOST': status.HTTP_401_UNAUTHORIZED,
+            'APP_PASSWORD_NOT_SUPPORTED': status.HTTP_400_BAD_REQUEST,
+            'APP_PASSWORD_DISABLED': status.HTTP_400_BAD_REQUEST,
+            'PERMISSION_DENIED': status.HTTP_403_FORBIDDEN,
+            'BROWSER_TIMEOUT': status.HTTP_504_GATEWAY_TIMEOUT,
+        }.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ HTTP Status: {status_code}")
+        logger.info("🔐 ========================================")
+        
+        raise HTTPException(
+            status_code=status_code,
+            detail=result.get('message', 'Application password creation failed')
+        )
+    
+    logger.info("🔐 [CREATE-APP-PASSWORD] ✅ SUCCESS")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ App name: {result.get('app_name')}")
+    password_preview = result.get('application_password', '')[:8] + '...' if result.get('application_password') else 'N/A'
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ Password: {password_preview}")
+    logger.info("🔐 ========================================")
+    
+    return CreateAppPasswordResponse(**result)
+
+
 @app.post("/clone", response_model=CloneResponse)
 async def clone_endpoint(request: CloneRequest):
     """
@@ -807,12 +885,21 @@ async def clone_endpoint(request: CloneRequest):
     If target is not provided and auto_provision is True, an ephemeral EC2 target
     will be automatically provisioned.
     """
+    logger.info("📋 ========================================")
+    logger.info("📋 [CLONE-START] Clone request received")
+    logger.info(f"📋 [CLONE-START] Source: {request.source.url}")
+    logger.info(f"📋 [CLONE-START] Auto-provision: {request.auto_provision}")
+    if request.target:
+        logger.info(f"📋 [CLONE-START] Target: {request.target.url}")
+    logger.info("📋 ========================================")
+    
     provisioned_target_info = None
     target_url = None
     target_username = None
     target_password = None
     
     # Setup source - Use browser-based setup for better compatibility with bot protection
+    logger.info("📋 [CLONE-SOURCE-SETUP] Setting up source WordPress")
     source_result = await setup_wordpress_with_browser(
         str(request.source.url),
         request.source.username,
@@ -821,25 +908,31 @@ async def clone_endpoint(request: CloneRequest):
     )
     
     if not source_result.get('success'):
+        logger.error(f"📋 [CLONE-SOURCE-SETUP] ❌ Source setup failed: {source_result.get('message')}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Source setup failed: {source_result.get('message')}"
         )
     
+    logger.info(f"📋 [CLONE-SOURCE-SETUP] ✅ Source API key: {source_result['api_key'][:8]}...")
+    
     # Determine target: use provided or auto-provision
     if request.target is None:
         if not request.auto_provision:
+            logger.error("📋 [CLONE-TARGET-SETUP] ❌ No target provided and auto_provision disabled")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Target credentials required when auto_provision is False"
             )
         
         # Auto-provision EC2 target
-        logger.info("Auto-provisioning EC2 target...")
+        logger.info("📋 [CLONE-TARGET-PROVISION] Auto-provisioning EC2 target...")
         provisioner = EC2Provisioner()
         
         # Generate unique customer_id from timestamp
         customer_id = f"clone-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        logger.info(f"📋 [CLONE-TARGET-PROVISION] Customer ID: {customer_id}")
+        logger.info(f"📋 [CLONE-TARGET-PROVISION] TTL: {request.ttl_minutes} minutes")
         
         provision_result = provisioner.provision_target(
             customer_id=customer_id,
@@ -847,6 +940,7 @@ async def clone_endpoint(request: CloneRequest):
         )
         
         if not provision_result.get('success'):
+            logger.error(f"📋 [CLONE-TARGET-PROVISION] ❌ Provisioning failed: {provision_result.get('message')}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Target provisioning failed: {provision_result.get('message')}"
@@ -868,18 +962,19 @@ async def clone_endpoint(request: CloneRequest):
             'instance_ip': provision_result.get('instance_ip')  # For Apache reload
         }
         
-        logger.info(f"Target provisioned: {public_url}")
+        logger.info(f"📋 [CLONE-TARGET-PROVISION] ✅ Target provisioned: {public_url}")
     else:
         # Use provided target credentials
         target_url = str(request.target.url)
         target_username = request.target.username
         target_password = request.target.password
+        logger.info(f"📋 [CLONE-TARGET-SETUP] Using provided target: {target_url}")
     
     # Setup target: use browser or direct if already provisioned
     if request.target is None:
         # Auto-provisioned target
         if provision_result.get('api_key'):
-            logger.info("Using direct API key from provisioner, skipping browser setup")
+            logger.info("📋 [CLONE-TARGET-SETUP] ✅ Using direct API key from provisioner")
             target_result = {
                 'success': True,
                 'api_key': provision_result['api_key'],
@@ -887,7 +982,7 @@ async def clone_endpoint(request: CloneRequest):
                 'message': 'Direct setup successful'
             }
         else:
-            logger.info("Direct API key missing, falling back to browser-based setup")
+            logger.info("📋 [CLONE-TARGET-SETUP] Direct API key missing, using browser setup")
             target_result = await setup_target_with_browser(
                 target_url,
                 target_username,
@@ -895,7 +990,7 @@ async def clone_endpoint(request: CloneRequest):
             )
     else:
         # User-provided target - use HTTP-based setup
-        logger.info("Using HTTP-based setup for user-provided target")
+        logger.info("📋 [CLONE-TARGET-SETUP] Using HTTP-based setup for user-provided target")
         target_result = await setup_wordpress(
             target_url,
             target_username,
@@ -904,12 +999,19 @@ async def clone_endpoint(request: CloneRequest):
         )
     
     if not target_result.get('success'):
+        logger.error(f"📋 [CLONE-TARGET-SETUP] ❌ Target setup failed: {target_result.get('message')}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Target setup failed: {target_result.get('message')}"
         )
     
+    logger.info(f"📋 [CLONE-TARGET-SETUP] ✅ Target API key: {target_result['api_key'][:8]}...")
+    
     # Perform clone
+    logger.info("📋 [CLONE-EXECUTE] Starting clone operation")
+    logger.info(f"📋 [CLONE-EXECUTE] Source URL: {request.source.url}")
+    logger.info(f"📋 [CLONE-EXECUTE] Target URL: {target_url}")
+    
     clone_result = perform_clone(
         str(request.source.url),
         source_result['api_key'],
@@ -921,16 +1023,18 @@ async def clone_endpoint(request: CloneRequest):
     )
     
     if not clone_result.get('success'):
-        logger.error(f"Clone failed: {clone_result.get('message')}")
+        logger.error(f"📋 [CLONE-EXECUTE] ❌ Clone failed: {clone_result.get('message')}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=clone_result.get('message', 'Clone failed')
         )
     
+    logger.info("📋 [CLONE-EXECUTE] ✅ Clone data transfer completed")
+    
     # Reload Apache in auto-provisioned containers to reset database connections
     # This is required because SQLite connections become stale after import
     if provisioned_target_info and provisioned_target_info.get('instance_ip'):
-        logger.info("Reloading Apache in target container to reset database connections...")
+        logger.info("📋 [CLONE-FINALIZE] Reloading Apache in target container")
         provisioner = EC2Provisioner()
         provisioner.reload_apache_in_container(
             provisioned_target_info['instance_ip'],
@@ -939,14 +1043,16 @@ async def clone_endpoint(request: CloneRequest):
         
         # Force-update WordPress URLs after Apache reload
         # WordPress auto-detects Host header and may revert URLs to localhost
-        logger.info("Force-updating WordPress URLs to prevent auto-correction...")
+        logger.info("📋 [CLONE-FINALIZE] Force-updating WordPress URLs")
         provisioner.update_wordpress_urls(
             provisioned_target_info['instance_ip'],
             provisioned_target_info['customer_id'],
             provisioned_target_info['public_url']
         )
     
-    logger.info("Clone process finished successfully")
+    logger.info("📋 [CLONE-SUCCESS] ✅ Clone completed successfully")
+    logger.info("📋 ========================================")
+    
     return CloneResponse(
         success=True,
         message="Clone completed successfully",
@@ -967,8 +1073,13 @@ async def restore_endpoint(request: RestoreRequest):
     - Restores themes from staging (to deploy design changes)
     - Restores database and uploads from staging
     """
-    logger.info(f"Restore requested: {request.source.url} -> {request.target.url}")
-    logger.info(f"Options: preserve_plugins={request.preserve_plugins}, preserve_themes={request.preserve_themes}")
+    logger.info("🔄 ========================================")
+    logger.info("🔄 [RESTORE-START] Restore request received")
+    logger.info(f"🔄 [RESTORE-START] Source: {request.source.url}")
+    logger.info(f"🔄 [RESTORE-START] Target: {request.target.url}")
+    logger.info(f"🔄 [RESTORE-START] Preserve plugins: {request.preserve_plugins}")
+    logger.info(f"🔄 [RESTORE-START] Preserve themes: {request.preserve_themes}")
+    logger.info("🔄 ========================================")
     
     source_url = str(request.source.url)
     
@@ -977,7 +1088,7 @@ async def restore_endpoint(request: RestoreRequest):
     
     # Always use browser automation to get the actual API key
     # Clones inherit their source site's API key, so we need to retrieve it
-    logger.info(f"Setting up source {'(clone)' if is_clone_source else '(regular site)'}...")
+    logger.info(f"🔄 [RESTORE-SOURCE-SETUP] Setting up source {'(clone)' if is_clone_source else '(regular site)'}")
     source_result = await setup_wordpress_with_browser(
         source_url,
         request.source.username,
@@ -986,14 +1097,16 @@ async def restore_endpoint(request: RestoreRequest):
     )
     
     if not source_result.get('success'):
+        logger.error(f"🔄 [RESTORE-SOURCE-SETUP] ❌ Source setup failed: {source_result.get('message')}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Source setup failed: {source_result.get('message')}"
         )
     source_api_key = source_result['api_key']
+    logger.info(f"🔄 [RESTORE-SOURCE-SETUP] ✅ Source API key: {source_api_key[:8]}...")
     
     # Setup target (production)
-    logger.info("Setting up target (production)...")
+    logger.info("🔄 [RESTORE-TARGET-SETUP] Setting up target (production)")
     target_result = await setup_wordpress_with_browser(
         str(request.target.url),
         request.target.username,
@@ -1004,11 +1117,12 @@ async def restore_endpoint(request: RestoreRequest):
     if not target_result.get('success'):
         # If browser automation failed due to corruption, try using migration-master-key directly
         if target_result.get('error_code') in ['SITE_UNRECOVERABLE', 'PLUGIN_CORRUPTED']:
-            logger.warning("Target site corrupted, attempting direct REST API access with migration-master-key")
+            logger.warning("🔄 [RESTORE-TARGET-SETUP] ⚠️ Target site corrupted, trying migration-master-key")
             
             # Test if REST API works with migration-master-key
             try:
                 test_url = str(request.target.url).rstrip('/')
+                logger.info(f"🔄 [RESTORE-TARGET-SETUP] Testing REST API: {test_url}/wp-json/custom-migrator/v1/status")
                 response = requests.get(
                     f"{test_url}/wp-json/custom-migrator/v1/status",
                     headers={'X-Migrator-Key': 'migration-master-key'},
@@ -1016,7 +1130,7 @@ async def restore_endpoint(request: RestoreRequest):
                 )
                 
                 if response.status_code == 200 and response.json().get('import_allowed'):
-                    logger.info("REST API accessible with migration-master-key, bypassing browser setup")
+                    logger.info("🔄 [RESTORE-TARGET-SETUP] ✅ REST API accessible with migration-master-key")
                     target_result = {
                         'success': True,
                         'api_key': 'migration-master-key',
@@ -1025,20 +1139,30 @@ async def restore_endpoint(request: RestoreRequest):
                         'message': 'Using direct REST API due to corrupted admin UI'
                     }
                 else:
+                    logger.error(f"🔄 [RESTORE-TARGET-SETUP] ❌ REST API test failed: HTTP {response.status_code}")
                     raise Exception(f"REST API test failed: {response.status_code}")
             except Exception as e:
-                logger.error(f"Direct REST API test failed: {e}")
+                logger.error(f"🔄 [RESTORE-TARGET-SETUP] ❌ Direct REST API test failed: {e}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Target setup failed: {target_result.get('message')}"
                 )
         else:
+            logger.error(f"🔄 [RESTORE-TARGET-SETUP] ❌ Target setup failed: {target_result.get('message')}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Target setup failed: {target_result.get('message')}"
             )
     
+    logger.info(f"🔄 [RESTORE-TARGET-SETUP] ✅ Target API key: {target_result['api_key'][:8]}...")
+    
     # Perform restore with preservation options
+    logger.info("🔄 [RESTORE-EXECUTE] Starting restore operation")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Source URL: {source_url}")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Target URL: {request.target.url}")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Preserve plugins: {request.preserve_plugins}")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Preserve themes: {request.preserve_themes}")
+    
     restore_result = perform_restore(
         source_url,
         source_api_key,
@@ -1051,13 +1175,15 @@ async def restore_endpoint(request: RestoreRequest):
     )
     
     if not restore_result.get('success'):
-        logger.error(f"Restore failed: {restore_result.get('message')}")
+        logger.error(f"🔄 [RESTORE-EXECUTE] ❌ Restore failed: {restore_result.get('message')}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=restore_result.get('message', 'Restore failed')
         )
     
-    logger.info("Restore process finished successfully")
+    logger.info("🔄 [RESTORE-SUCCESS] ✅ Restore completed successfully")
+    logger.info("🔄 ========================================")
+    
     return RestoreResponse(
         success=True,
         message="Restore completed successfully",

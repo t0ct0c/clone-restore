@@ -56,6 +56,12 @@ docker rm wp-setup-service 2>/dev/null || true
 echo "🚀 Starting new container..."
 docker run -d \
   --name wp-setup-service \
+  --restart unless-stopped \
+  --log-driver loki \
+  --log-opt loki-url="http://localhost:3100/loki/api/v1/push" \
+  --log-opt loki-batch-size=100 \
+  --log-opt loki-retries=2 \
+  --log-opt loki-external-labels="job=wp-setup-service,environment=production" \
   --network host \
   -e AWS_REGION=${REGION} \
   -e AWS_DEFAULT_REGION=${REGION} \

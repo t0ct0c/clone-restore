@@ -7,7 +7,7 @@ a2dismod mpm_event mpm_worker 2>/dev/null || true
 a2enmod mpm_prefork 2>/dev/null || true
 echo "MPM configuration fixed."
 
-# Inject reverse proxy configuration into wp-config.php
+# Inject reverse proxy configuration and Application Passwords support into wp-config.php
 cat > /tmp/inject-proxy.php << 'EOF'
 <?php
 $file = '/var/www/html/wp-config.php';
@@ -27,7 +27,9 @@ if (strpos($content, 'WP_REVERSE_PROXY') === false) {
                     "define('WP_SITEURL', \$proto . '://' . \$host . \$prefix);\n" .
                     "define('COOKIEPATH', \$prefix . '/');\n" .
                     "define('SITECOOKIEPATH', \$prefix . '/');\n" .
-                    "define('ADMIN_COOKIE_PATH', \$prefix . '/wp-admin');\n";
+                    "define('ADMIN_COOKIE_PATH', \$prefix . '/wp-admin');\n\n" .
+                    "/* Enable Application Passwords over HTTP for development */\n" .
+                    "define('WP_ENVIRONMENT_TYPE', 'local');\n";
     $content = str_replace("/* That's all, stop editing!", $proxy_config . "/* That's all, stop editing!", $content);
     file_put_contents($file, $content);
 }
