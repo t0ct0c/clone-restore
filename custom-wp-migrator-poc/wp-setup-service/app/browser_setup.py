@@ -496,6 +496,17 @@ async def setup_wordpress_with_browser(url: str, username: str, password: str, r
                 await page.goto(f"{url}/wp-admin/", wait_until="networkidle", timeout=30000)
                 l.info("Triggered plugins_loaded by loading wp-admin dashboard")
                 
+                # Step 4.6: Flush permalinks to ensure REST API works
+                l.info("Step 4.6: Flushing permalinks to ensure REST API is accessible")
+                try:
+                    await page.goto(f"{url}/wp-admin/options-permalink.php", wait_until="networkidle", timeout=30000)
+                    save_button = page.locator('input[type="submit"][name="submit"]')
+                    await save_button.click(timeout=10000)
+                    await page.wait_for_selector('text=Permalink structure updated', timeout=15000)
+                    l.info("Permalinks flushed successfully")
+                except Exception as e:
+                    l.warning(f"Could not flush permalinks: {e}, REST API might not work")
+                
                 # Step 5: Enable import for target (skip for source)
                 if role == 'target':
                     l.info("Enabling import on target")
@@ -557,3 +568,378 @@ async def setup_target_with_browser(url: str, username: str, password: str) -> d
     Backward-compatible wrapper for setup_wordpress_with_browser with role='target'
     """
     return await setup_wordpress_with_browser(url, username, password, role='target')
+
+
+async def create_application_password(url: str, username: str, password: str, app_name: str = "WP Migrator") -> dict:
+    """
+    Create WordPress Application Password via browser automation
+    
+    Args:
+        url: WordPress site URL
+        username: Admin username
+        password: Admin password
+        app_name: Name for the application password (default: "WP Migrator")
+    
+    Returns:
+        {
+          'success': bool,
+          'application_password': str,  # Format: "xxxx xxxx xxxx xxxx xxxx xxxx"
+          'app_name': str,
+          'message': str,
+          'error_code': str (optional, only on failure)
+        }
+    """
+    with tracer.start_as_current_span("create_application_password") as span:
+        span.set_attribute("wordpress.url", url)
+        span.set_attribute("app_name", app_name)
+        trace_id = format(span.get_span_context().trace_id, '032x')
+        l = logger.bind(trace_id=trace_id)
+        
+        l.info("🔐 [APP-PASSWORD-START] Creating application password")
+        l.info(f"🔐 [APP-PASSWORD-START] Target URL: {url}")
+        l.info(f"🔐 [APP-PASSWORD-START] App name: {app_name}")
+        l.info(f"🔐 [APP-PASSWORD-START] Username: {username}")
+        url = url.rstrip('/')
+        
+        try:
+            async with AsyncCamoufox(
+                headless=True,
+                humanize=True,
+                geoip=True,
+                os=['windows', 'macos'],
+                locale='en-US'
+            ) as browser:
+                context = await browser.new_context(
+                    viewport={'width': 1280, 'height': 800},
+                    accept_downloads=False
+                )
+                
+                context.set_default_timeout(90000)
+                context.set_default_navigation_timeout(90000)
+                
+                page = await context.new_page()
+                l.info("🔐 [APP-PASSWORD-BROWSER] Browser initialized successfully")
+                
+                # Step 1: Login
+                l.info("🔐 [APP-PASSWORD-LOGIN] Step 1/5: Logging into WordPress")
+                try:
+                    l.info(f"🔐 [APP-PASSWORD-LOGIN] Navigating to {url}/wp-login.php")
+                    await page.goto(f"{url}/wp-login.php", wait_until="networkidle", timeout=60000)
+                    l.info("🔐 [APP-PASSWORD-LOGIN] Login page loaded")
+                    
+                    # Check for bot challenges
+                    content = await page.content()
+                    if "Cloudflare" in content or "Attention Required" in content:
+                        l.warning("🔐 [APP-PASSWORD-LOGIN] ⚠️ Bot challenge detected, waiting 5 seconds")
+                        await asyncio.sleep(5)
+                    
+                    # Fill login form
+                    l.info("🔐 [APP-PASSWORD-LOGIN] Waiting for login form fields")
+                    await page.wait_for_selector('input[name="log"]', state="visible", timeout=60000)
+                    l.info("🔐 [APP-PASSWORD-LOGIN] Login form fields found")
+                    
+                    await page.fill('input[name="log"]', username)
+                    await page.fill('input[name="pwd"]', password)
+                    l.info("🔐 [APP-PASSWORD-LOGIN] Credentials filled")
+                    
+                    await page.click('input[name="wp-submit"]')
+                    l.info("🔐 [APP-PASSWORD-LOGIN] Login form submitted")
+                    
+                    # Wait for admin area
+                    await page.wait_for_selector('#wpadminbar, .login-action-login, #login_error', timeout=60000)
+                    await asyncio.sleep(2)
+                    l.info("🔐 [APP-PASSWORD-LOGIN] Page loaded after login")
+                    
+                    # Check if login succeeded
+                    current_url = page.url
+                    l.info(f"🔐 [APP-PASSWORD-LOGIN] Current URL: {current_url}")
+                    
+                    if "wp-login.php" in current_url:
+                        login_error = page.locator("#login_error")
+                        if await login_error.count() > 0:
+                            error_text = await login_error.inner_text()
+                            l.error(f"🔐 [APP-PASSWORD-LOGIN] ❌ Login failed: {error_text.strip()}")
+                            return {
+                                'success': False,
+                                'error_code': 'LOGIN_FAILED',
+                                'message': f'Login failed: {error_text.strip()}'
+                            }
+                        
+                        l.error("🔐 [APP-PASSWORD-LOGIN] ❌ Still on login page, admin area not reached")
+                        return {
+                            'success': False,
+                            'error_code': 'LOGIN_FAILED',
+                            'message': 'Failed to reach admin area after login'
+                        }
+                    
+                    l.info("🔐 [APP-PASSWORD-LOGIN] ✅ Login successful")
+                    
+                except Exception as e:
+                    l.error(f"🔐 [APP-PASSWORD-LOGIN] ❌ Login error: {e}")
+                    page_title = await page.title() if page else "Unknown"
+                    l.error(f"🔐 [APP-PASSWORD-LOGIN] ❌ Page title at error: {page_title}")
+                    return {
+                        'success': False,
+                        'error_code': 'LOGIN_ERROR',
+                        'message': f'Login error: {str(e)}'
+                    }
+                
+                # Step 2: Navigate to profile page
+                l.info("🔐 [APP-PASSWORD-PROFILE] Step 2/5: Navigating to user profile")
+                try:
+                    l.info(f"🔐 [APP-PASSWORD-PROFILE] Navigating to {url}/wp-admin/profile.php")
+                    await page.goto(f"{url}/wp-admin/profile.php", wait_until="domcontentloaded", timeout=60000)
+                    await asyncio.sleep(2)
+                    l.info("🔐 [APP-PASSWORD-PROFILE] Profile page loaded")
+                    
+                    # Check if we got redirected back to login
+                    current_url = page.url
+                    if "wp-login.php" in current_url:
+                        l.error(f"🔐 [APP-PASSWORD-PROFILE] ❌ Session lost, redirected to: {current_url}")
+                        return {
+                            'success': False,
+                            'error_code': 'SESSION_LOST',
+                            'message': 'Session lost after login'
+                        }
+                    
+                    l.info(f"🔐 [APP-PASSWORD-PROFILE] ✅ Profile page URL: {current_url}")
+                    
+                except Exception as e:
+                    l.error(f"🔐 [APP-PASSWORD-PROFILE] ❌ Navigation error: {e}")
+                    return {
+                        'success': False,
+                        'error_code': 'NAVIGATION_ERROR',
+                        'message': f'Failed to navigate to profile: {str(e)}'
+                    }
+                
+                # Step 3: Check if Application Passwords section exists
+                l.info("🔐 [APP-PASSWORD-CHECK] Step 3/5: Checking for Application Passwords support")
+                try:
+                    # Check for "not available" message first
+                    not_available = page.locator('.application-passwords-not-available-message, .notice-error:has-text("Application Passwords")')
+                    not_available_count = await not_available.count()
+                    l.info(f"🔐 [APP-PASSWORD-CHECK] Not available messages found: {not_available_count}")
+                    
+                    if not_available_count > 0:
+                        message = await not_available.inner_text()
+                        l.warning(f"🔐 [APP-PASSWORD-CHECK] ⚠️ Application Passwords disabled: {message.strip()}")
+                        return {
+                            'success': False,
+                            'error_code': 'APP_PASSWORD_DISABLED',
+                            'message': f'Application Passwords not available: {message.strip()}'
+                        }
+                    
+                    # Look for the input field
+                    l.info("🔐 [APP-PASSWORD-CHECK] Looking for application password name input field")
+                    app_name_input = page.locator('input[name="new_application_password_name"]')
+                    input_count = await app_name_input.count()
+                    l.info(f"🔐 [APP-PASSWORD-CHECK] Input fields found: {input_count}")
+                    
+                    if input_count == 0:
+                        l.error("🔐 [APP-PASSWORD-CHECK] ❌ Application Passwords section not found")
+                        page_content_snippet = await page.content()
+                        l.debug(f"🔐 [APP-PASSWORD-CHECK] Page content (first 500 chars): {page_content_snippet[:500]}")
+                        return {
+                            'success': False,
+                            'error_code': 'APP_PASSWORD_NOT_SUPPORTED',
+                            'message': 'Application Passwords not supported (requires WordPress 5.6+)'
+                        }
+                    
+                    l.info("🔐 [APP-PASSWORD-CHECK] ✅ Application Passwords section found")
+                    
+                except Exception as e:
+                    l.error(f"🔐 [APP-PASSWORD-CHECK] ❌ Check error: {e}")
+                    return {
+                        'success': False,
+                        'error_code': 'APP_PASSWORD_CHECK_ERROR',
+                        'message': f'Error checking Application Passwords support: {str(e)}'
+                    }
+                
+                # Step 4: Create new application password
+                l.info(f"🔐 [APP-PASSWORD-CREATE] Step 4/5: Creating password with name: '{app_name}'")
+                try:
+                    # Scroll to Application Passwords section (it's usually below the fold)
+                    l.info("🔐 [APP-PASSWORD-CREATE] Scrolling to Application Passwords section")
+                    app_password_section = page.locator('#application-passwords-section, .application-passwords')
+                    if await app_password_section.count() > 0:
+                        await app_password_section.scroll_into_view_if_needed()
+                        await asyncio.sleep(1)
+                        l.info("🔐 [APP-PASSWORD-CREATE] Scrolled to Application Passwords section")
+
+                    # Fill application name
+                    l.info("🔐 [APP-PASSWORD-CREATE] Filling application name input")
+                    await page.fill('input[name="new_application_password_name"]', app_name)
+                    await asyncio.sleep(1)
+                    l.info(f"🔐 [APP-PASSWORD-CREATE] Application name '{app_name}' filled")
+                    
+                    # Take screenshot for debugging
+                    await page.screenshot(path='/tmp/app-password-before-click.png')
+                    l.info("🔐 [APP-PASSWORD-CREATE] Screenshot saved to /tmp/app-password-before-click.png")
+                    
+                    # Click the button - use specific selectors to avoid clicking wrong button
+                    button_clicked = False
+                    selectors_tried = []
+                    for selector in [
+                        '#do_new_application_password',  # WordPress default ID
+                        'button[name="do_new_application_password"]',  # By name attribute
+                        '#generate-application-password',  # Some themes might use this
+                        'button:has-text("Add New Application Password")',  # By exact text
+                        '.create-application-password button[type="button"]',  # Within the app password section
+                        'button.button-secondary:has-text("Add")',  # WordPress uses button-secondary for this
+                    ]:
+                        button = page.locator(selector)
+                        button_count = await button.count()
+                        selectors_tried.append(f"{selector}={button_count}")
+
+                        if button_count > 0:
+                            l.info(f"🔐 [APP-PASSWORD-CREATE] Found button with selector: {selector}")
+                            await button.first.click()
+                            button_clicked = True
+                            l.info(f"🔐 [APP-PASSWORD-CREATE] Button clicked: {selector}")
+                            break
+                    
+                    if not button_clicked:
+                        l.error(f"🔐 [APP-PASSWORD-CREATE] ❌ Button not found. Tried: {', '.join(selectors_tried)}")
+                        return {
+                            'success': False,
+                            'error_code': 'BUTTON_NOT_FOUND',
+                            'message': f'Could not find Add New button. Tried selectors: {selectors_tried}'
+                        }
+                    
+                    # Wait for password to appear (JavaScript renders it asynchronously)
+                    l.info("🔐 [APP-PASSWORD-CREATE] Waiting for password to be rendered by JavaScript")
+                    try:
+                        # Wait for the input element to be created and visible in the DOM
+                        await page.wait_for_selector('#new-application-password-value', state='visible', timeout=15000)
+                        l.info("🔐 [APP-PASSWORD-CREATE] ✅ Password input element appeared")
+                    except Exception as wait_err:
+                        l.warning(f"🔐 [APP-PASSWORD-CREATE] ⚠️ Password input didn't appear in 15s: {wait_err}")
+                        l.info("🔐 [APP-PASSWORD-CREATE] Trying alternative wait for notice div")
+                        try:
+                            # Try waiting for the notice div instead
+                            await page.wait_for_selector('.new-application-password-notice:visible', timeout=10000)
+                            l.info("🔐 [APP-PASSWORD-CREATE] ✅ Password notice appeared")
+                        except Exception as notice_err:
+                            l.error(f"🔐 [APP-PASSWORD-CREATE] ❌ Notice div also didn't appear: {notice_err}")
+
+                    # Additional small wait for any animations
+                    await asyncio.sleep(1)
+                    l.info("🔐 [APP-PASSWORD-CREATE] ✅ Password generation completed")
+
+                    # Take screenshot after generation
+                    await page.screenshot(path='/tmp/app-password-after-generate.png')
+                    l.info("🔐 [APP-PASSWORD-CREATE] Screenshot saved to /tmp/app-password-after-generate.png")
+                    
+                except Exception as e:
+                    l.error(f"🔐 [APP-PASSWORD-CREATE] ❌ Creation error: {e}")
+                    import traceback as tb
+                    l.error(f"🔐 [APP-PASSWORD-CREATE] ❌ Traceback: {tb.format_exc()}")
+                    return {
+                        'success': False,
+                        'error_code': 'CREATE_ERROR',
+                        'message': f'Error creating application password: {str(e)}'
+                    }
+                
+                # Step 5: Extract the generated password
+                l.info("🔐 [APP-PASSWORD-EXTRACT] Step 5/5: Extracting generated password from page")
+                try:
+                    # Try multiple selectors for the password display
+                    password_text = None
+                    selectors_tried = []
+
+                    # Primary selector: the input element that WordPress creates
+                    primary_selector = '#new-application-password-value'
+                    password_element = page.locator(primary_selector)
+                    element_count = await password_element.count()
+                    selectors_tried.append(f"{primary_selector}={element_count}")
+
+                    if element_count > 0:
+                        # Get value attribute from input element
+                        password_text = await password_element.input_value()
+                        l.info(f"🔐 [APP-PASSWORD-EXTRACT] ✅ Found password using selector: {primary_selector}")
+                        l.info(f"🔐 [APP-PASSWORD-EXTRACT] Password length: {len(password_text)} chars")
+
+                    # Fallback selectors if primary fails
+                    if not password_text:
+                        for selector in [
+                            '.new-application-password-notice input.code',
+                            '.application-password-display input',
+                            '#application-passwords-section input.code',
+                            '.notice-success input[readonly]',
+                        ]:
+                            password_element = page.locator(selector)
+                            element_count = await password_element.count()
+                            selectors_tried.append(f"{selector}={element_count}")
+
+                            if element_count > 0:
+                                # Try getting value attribute first (for input elements)
+                                password_text = await password_element.first.input_value()
+                                # Validate it looks like an app password (should have spaces and be long)
+                                if password_text and len(password_text) > 15:
+                                    l.info(f"🔐 [APP-PASSWORD-EXTRACT] ✅ Found password using selector: {selector}")
+                                    l.info(f"🔐 [APP-PASSWORD-EXTRACT] Password length: {len(password_text)} chars")
+                                    break
+                                else:
+                                    l.warning(f"🔐 [APP-PASSWORD-EXTRACT] ⚠️ Selector {selector} found text too short ({len(password_text) if password_text else 0} chars): '{password_text}'")
+                                    password_text = None  # Reset to continue trying
+                    
+                    if not password_text:
+                        # Log selectors tried for debugging and fail hard
+                        l.error(f"🔐 [APP-PASSWORD-EXTRACT] ❌ Password not found. Tried: {', '.join(selectors_tried)}")
+                        
+                        # Save full HTML snapshot for debugging
+                        page_content = await page.content()
+                        with open('/tmp/app-password-page.html', 'w') as f:
+                            f.write(page_content)
+                        l.info("🔐 [APP-PASSWORD-EXTRACT] Full HTML saved to /tmp/app-password-page.html")
+                        
+                        return {
+                            'success': False,
+                            'error_code': 'PASSWORD_NOT_FOUND',
+                            'message': f'Password created but could not extract it. Tried selectors: {selectors_tried}'
+                        }
+                    
+                    # Clean up the password (remove extra whitespace)
+                    password_text = password_text.strip()
+                    password_preview = password_text[:8] + '...' if len(password_text) > 8 else password_text
+                    
+                    l.info(f"🔐 [APP-PASSWORD-EXTRACT] ✅ Password extracted: {password_preview}")
+                    l.info(f"🔐 [APP-PASSWORD-SUCCESS] ✅ Application password created successfully")
+                    l.info(f"🔐 [APP-PASSWORD-SUCCESS] App name: {app_name}")
+                    l.info(f"🔐 [APP-PASSWORD-SUCCESS] Password format: {'VALID' if ' ' in password_text else 'UNKNOWN'}")
+                    
+                    return {
+                        'success': True,
+                        'application_password': password_text,
+                        'app_name': app_name,
+                        'message': 'Application password created successfully'
+                    }
+                    
+                except Exception as e:
+                    l.error(f"🔐 [APP-PASSWORD-EXTRACT] ❌ Extraction error: {e}")
+                    import traceback as tb
+                    l.error(f"🔐 [APP-PASSWORD-EXTRACT] ❌ Traceback: {tb.format_exc()}")
+                    return {
+                        'success': False,
+                        'error_code': 'EXTRACT_ERROR',
+                        'message': f'Error extracting password: {str(e)}'
+                    }
+                
+        except PlaywrightTimeout as e:
+            l.error(f"🔐 [APP-PASSWORD-ERROR] ❌ TIMEOUT: {str(e)}")
+            span.set_status(trace.Status(trace.StatusCode.ERROR, f"Browser timeout: {str(e)}"))
+            return {
+                'success': False,
+                'error_code': 'BROWSER_TIMEOUT',
+                'message': f'Browser automation timed out: {str(e)}'
+            }
+        except Exception as e:
+            l.error(f"🔐 [APP-PASSWORD-ERROR] ❌ FATAL ERROR: {str(e)}")
+            import traceback as tb
+            l.error(f"🔐 [APP-PASSWORD-ERROR] ❌ Traceback: {tb.format_exc()}")
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(e)))
+            return {
+                'success': False,
+                'error_code': 'CREATION_ERROR',
+                'message': f'Application password creation failed: {str(e)}'
+            }

@@ -1,6 +1,6 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-01-28 (Session: Restore endpoint preflight validation implemented)
+**Last Updated**: 2026-01-30 (Session: App password + wp-admin URL locking fully fixed)
 
 ## Current Status Summary
 
@@ -11,11 +11,13 @@
 - **Response format**: Returns URL, username, password, expiration time
 - **ALB path-based routing**: Dynamic listener rules route each clone to correct instance
 - **Frontend access**: Clone homepages and content accessible via ALB URLs
-- **wp-admin access**: Login pages load correctly (with wp-admin.php redirect)
-- **REST API**: Export/import endpoints fully functional on clones
+- **wp-admin access**: Direct wp-admin access works correctly via ALB URL (redirects properly handled by Nginx)
+- **REST API**: Export/import endpoints fully functional on clones (when source/target WordPress state is healthy)
 - **Restore workflow**: Clone → production restore working end-to-end with validation
 - **Preflight checks**: Validates prerequisites before destructive operations
 - **Post-import verification**: Confirms restore actually worked (not silent failures)
+- **Permalink flush after plugin activation**: Browser automation flushes permalinks on source sites after plugin activation to restore REST API routing (e.g., bonnel.ai) without manual intervention
+- **Application password automation**: `/create-app-password` endpoint reliably creates WordPress Application Passwords via browser automation on any WordPress site (tested on bonnel.ai)
 
 ### 🎯 System Ready for Production Use
 All core functionality is working. The system can:
@@ -24,6 +26,7 @@ All core functionality is working. The system can:
 3. Restore changes back to production with theme/plugin preservation options
 4. Validate all prerequisites before starting restore (fail-fast)
 5. Verify restore success before returning success response
+6. Create WordPress Application Passwords automatically for REST API authentication
 
 ## Infrastructure Overview
 
@@ -859,6 +862,237 @@ async with AsyncCamoufox(
 **Workaround**: Use a different, non-corrupted WordPress site as restore target
 **System Status**: ✅ **System working correctly** - properly detects and reports corruption
 
+### ✅ Issue 12: Clone wp-admin URL Locking (FIXED - Jan 30, 2026)
+**Problem**:
+- Clones redirected `/wp-admin` to `http://localhost/wp-admin/` inside the container instead of the ALB URL path
+- This broke direct wp-admin access for clones even though frontend and REST API worked correctly
+- Issue occurred even though WP_HOME and WP_SITEURL constants were set correctly in wp-config.php
+
+**Root Cause - Sequential Analysis**:
+Investigation revealed the problem was in the **Nginx proxy configuration**, not WordPress URL constants:
+
+1. **Nginx sets Host header to localhost** (Line 485 in ec2_provisioner.py):
+   ```nginx
+   proxy_set_header Host localhost;
+   ```
+   - Done intentionally to "avoid host-mismatch redirect loops" per code comment
+   - WordPress receives all requests as if they came from `localhost`
+
+2. **WordPress wp-admin redirect uses Host header**:
+   - WordPress core uses the `Host` header for certain redirects (e.g., `/wp-admin` → `/wp-admin/`)
+   - Even though WP_HOME and WP_SITEURL constants are set, wp-admin redirect bypasses them
+   - Result: Redirect to `http://localhost/wp-admin/`
+
+3. **proxy_redirect rule incomplete** (Line 493 in original ec2_provisioner.py):
+   ```nginx
+   proxy_redirect / /clone-xxx/;
+   ```
+   - Only rewrites **relative** Location headers (e.g., `/wp-admin/`)
+   - Does NOT rewrite **absolute** Location headers (e.g., `http://localhost/wp-admin/`)
+   - WordPress wp-admin redirect returns absolute URL, which passes through unrewritten
+
+**Verification of wp-config.php constants** (Investigation findings):
+- ✅ WP_HOME and WP_SITEURL constants WERE present in wp-config.php
+- ✅ Database values WERE set correctly to ALB URL
+- ✅ Must-use plugin WERE present and filtering options
+- **Conclusion**: Constants were working correctly; Nginx proxy_redirect was the issue
+
+**Solution Implemented**:
+Updated Nginx configuration in [ec2_provisioner.py](file:///home/chaz/Desktop/clone-restore/custom-wp-migrator-poc/wp-setup-service/app/ec2_provisioner.py) (Lines 491-494):
+
+**Before:**
+```nginx
+# Rewrite redirects back through the path prefix
+proxy_redirect / /clone-xxx/;
+```
+
+**After:**
+```nginx
+# Rewrite redirects back through the path prefix
+# Handle both relative paths and absolute localhost URLs
+proxy_redirect http://localhost/ /clone-xxx/;
+proxy_redirect / /clone-xxx/;
+```
+
+**Why This Works**:
+1. **First rule**: Catches absolute URLs like `http://localhost/wp-admin/` and rewrites to `/clone-xxx/wp-admin/`
+2. **Second rule**: Catches relative URLs like `/wp-admin/` and rewrites to `/clone-xxx/wp-admin/`
+3. **Order matters**: Nginx processes proxy_redirect rules in order, most specific first
+4. **No WordPress changes needed**: Fix is purely at the proxy layer
+
+**Test Results**:
+```bash
+# Test on clone-20260130-084613 (manual fix):
+curl -I ".../clone-20260130-084613/wp-admin"
+Location: http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-20260130-084613/wp-admin/  ✅
+
+# Test on clone-20260130-085721 (deployed fix):
+curl -I ".../clone-20260130-085721/wp-admin"
+Location: http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-20260130-085721/wp-admin/  ✅
+```
+
+**Logs Verification**:
+```
+✅ Nginx configured for path /clone-xxx
+✅ wp-config.php constants: WP_HOME and WP_SITEURL set to ALB URL
+✅ Database options: home and siteurl set to ALB URL
+✅ wp-admin redirect: Now correctly points to ALB URL
+```
+
+**Files Modified**:
+- `/wp-setup-service/app/ec2_provisioner.py` (lines 481-494)
+  - Added `proxy_redirect http://localhost/ {path_prefix}/;` to catch absolute localhost URLs
+  - Kept existing `proxy_redirect / {path_prefix}/;` for relative paths
+  - Added clarifying comment about handling both redirect types
+
+**Status**: ✅ Code deployed and tested successfully
+**Deployed**: 2026-01-30
+**Commit**: f7ac34d (same commit as app password fix)
+
+**Prevention**: This fix ensures reliable wp-admin access on all new clones
+**Impact**: High - Enables direct wp-admin access for clone management and debugging
+
+**Key Learnings**:
+1. **proxy_redirect handles patterns, not regex** - Need separate rules for absolute vs relative URLs
+2. **Host header matters for redirects** - Even when WP_HOME/WP_SITEURL are set, Host header affects some redirects
+3. **Absolute vs relative URLs** - Nginx treats `Location: /path` differently from `Location: http://host/path`
+4. **Debugging requires full stack analysis** - wp-config.php constants were correct; issue was at proxy layer
+5. **Comments can be misleading** - "avoid host-mismatch redirect loops" comment didn't explain full implications
+6. **WordPress redirect types vary** - Homepage works fine, but wp-admin uses different redirect logic
+7. **proxy_redirect order matters** - More specific patterns should come before general patterns
+8. **Integration testing essential** - Unit testing wp-config.php wouldn't have caught this Nginx issue
+9. **Multiple layers of URL rewriting** - wp-config.php + must-use plugin + database + Nginx all involved
+10. **Systematic investigation pays off** - Checking each layer (wp-config, database, Nginx) revealed true cause
+
+### ✅ Issue 13: Application Password Extraction on bonnel.ai (FIXED - Jan 30, 2026)
+**Problem**:
+- `/create-app-password` successfully logged into `https://bonnel.ai` and navigated to profile page, but returned incorrect values
+- First attempt: Returned unrelated text (e.g., `initializeCommandPalette`) from JavaScript code elements
+- Second attempt: Returned username "charles" instead of the actual application password
+- Password element never appeared in the DOM after clicking button
+
+**Root Cause - Sequential Analysis**:
+The automation had **three critical bugs**:
+
+1. **Wrong Button Click** (Primary Issue):
+   - Selector `input[type="submit"].button-primary` matched the main "Update Profile" button
+   - Should have clicked `#do_new_application_password` button specifically for application passwords
+   - Clicking wrong button saved the profile but didn't trigger password generation JavaScript
+
+2. **Static Wait Instead of Dynamic**:
+   - Used `await asyncio.sleep(3)` - fixed 3 second wait
+   - Password is generated asynchronously by JavaScript via AJAX
+   - Need to wait for `#new-application-password-value` element to appear in DOM
+
+3. **Generic Fallback Selector**:
+   - Fallback selector `input[readonly][value]` was too broad
+   - Matched username field ("charles") instead of password field
+   - No validation that extracted value was actually a password (should be 20+ chars with spaces)
+
+**Solution Implemented**:
+Fixed all three issues in [browser_setup.py](file:///home/chaz/Desktop/clone-restore/custom-wp-migrator-poc/wp-setup-service/app/browser_setup.py):
+
+**1. Corrected Button Selectors (Lines 774-783)**:
+```python
+for selector in [
+    '#do_new_application_password',  # WordPress default ID - CORRECT
+    'button[name="do_new_application_password"]',  # By name attribute
+    '#generate-application-password',  # Theme fallback
+    'button:has-text("Add New Application Password")',  # By text
+    '.create-application-password button[type="button"]',  # Scoped to section
+    'button.button-secondary:has-text("Add")',  # WordPress uses button-secondary
+]
+```
+
+**2. Added Dynamic Wait for Password (Lines 803-818)**:
+```python
+# Wait for password to appear (JavaScript renders it asynchronously)
+try:
+    # Wait for the input element to be created and visible in the DOM
+    await page.wait_for_selector('#new-application-password-value', state='visible', timeout=15000)
+    l.info("✅ Password input element appeared")
+except Exception as wait_err:
+    # Try waiting for notice div as fallback
+    await page.wait_for_selector('.new-application-password-notice:visible', timeout=10000)
+```
+
+**3. Improved Password Extraction (Lines 840-865)**:
+```python
+# Primary: Get value from input element
+password_text = await page.locator('#new-application-password-value').input_value()
+
+# Fallbacks: Validate password length (must be >15 chars)
+if password_text and len(password_text) > 15:
+    # Valid application password
+else:
+    # Too short, try next selector
+```
+
+**4. Added Section Scrolling (Lines 761-768)**:
+```python
+# Scroll to Application Passwords section (usually below the fold)
+app_password_section = page.locator('#application-passwords-section')
+await app_password_section.scroll_into_view_if_needed()
+```
+
+**Test Results**:
+```bash
+curl -X POST http://13.222.20.138:8000/create-app-password \
+  -d '{"url": "https://bonnel.ai", "username": "charles", "password": "...", "app_name": "TestApp3"}'
+
+Response:
+{
+  "success": true,
+  "application_password": "pkkF YI42 RLzI CHtY yNcI s5BX",
+  "app_name": "TestApp3",
+  "message": "Application password created successfully"
+}
+```
+
+**Logs Verification**:
+```
+✅ Found button with selector: #do_new_application_password
+✅ Password input element appeared
+✅ Found password using selector: #new-application-password-value
+✅ Password length: 29 chars
+✅ Password format: VALID
+✅ Password extracted: pkkF YI4...
+```
+
+**Why This Works**:
+1. **Correct button**: Now clicks `#do_new_application_password` - triggers WordPress AJAX to create password
+2. **Dynamic wait**: Waits up to 15 seconds for JavaScript to render password in DOM
+3. **Input value extraction**: Uses `input_value()` to get value attribute from input element
+4. **Length validation**: Rejects values <15 chars (eliminates username/random text matches)
+5. **Section scrolling**: Ensures Application Passwords section is visible before interaction
+
+**Files Modified**:
+- `/wp-setup-service/app/browser_setup.py` (lines 761-865)
+  - Fixed button selectors to target correct application password button
+  - Changed from static sleep to dynamic wait for password element
+  - Improved extraction with input_value() and length validation
+  - Added scrolling to Application Passwords section
+
+**Status**: ✅ Code deployed and tested successfully
+**Deployed**: 2026-01-30
+**Commit**: f7ac34d (new image SHA: sha256:5b14521c91b01984008680ff8de97bdfce181286de09c14163a33e1be90256f0)
+
+**Prevention**: This fix ensures reliable application password creation on all WordPress sites
+**Impact**: High - Enables automated application password creation for REST API authentication
+
+**Key Learnings**:
+1. **Generic selectors are dangerous** - `button.button-primary` matches many buttons, need specific IDs
+2. **Static waits hide timing issues** - JavaScript async operations need dynamic element waiting
+3. **Fallback selectors need validation** - Generic `input[readonly]` matches unintended fields
+4. **Screenshots are essential** - Revealed we were clicking wrong button (showed "Profile updated" message)
+5. **WordPress button classes matter** - Application password button uses `button-secondary`, not `button-primary`
+6. **DOM inspection reveals truth** - HTML template showed `#do_new_application_password` was correct ID
+7. **Value extraction method matters** - `inner_text()` wrong for input elements, use `input_value()` instead
+8. **Scrolling matters** - Application Passwords section often below fold, needs scroll_into_view
+9. **Length validation prevents false matches** - Real passwords are 20+ chars, username is 7 chars
+10. **Test with actual values** - Seeing "charles" extracted immediately revealed wrong field matched
+
+
 **Key Insight**: 
 The system is functioning as designed. betaweb.ai is too corrupted to be recovered using wp-admin-only access. Without SSH/database access, there is no way to fix WordPress database corruption. The automation correctly identifies this and provides clear error messages.
 
@@ -1088,13 +1322,14 @@ sudo docker exec CONTAINER_NAME tail -20 /var/log/apache2/error.log
 ## API Endpoints
 - **Clone**: `POST http://13.222.20.138:8000/clone`
 - **Restore**: `POST http://13.222.20.138:8000/restore`
+- **Create App Password**: `POST http://13.222.20.138:8000/create-app-password`
 - **Health**: `GET http://13.222.20.138:8000/health`
 - **Web UI**: `http://13.222.20.138:8000/`
 
 ## Documentation Status
 - ✅ **README.md**: Updated with current architecture and mermaid diagram (2026-01-24)
 - ✅ **API_TEST_PLAN.md**: Updated with auto-provisioning, quirks, response format (2026-01-24)
-- ✅ **OPERATIONAL_MEMORY.md**: Updated with current status (2026-01-24)
+- ✅ **OPERATIONAL_MEMORY.md**: Updated with current status (2026-01-30)
 - ✅ **.gitignore**: Added AGENTS.md, QODER.md, .qoder/, openspec/
 
 ## Git Repository

@@ -488,8 +488,10 @@ location {path_prefix}/ {{
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Prefix {path_prefix};
-    
+
     # Rewrite redirects back through the path prefix
+    # Handle both relative paths and absolute localhost URLs
+    proxy_redirect http://localhost/ {path_prefix}/;
     proxy_redirect / {path_prefix}/;
 }}
 """
@@ -633,23 +635,11 @@ location {path_prefix}/ {{
             stdin, stdout, stderr = ssh.exec_command(docker_cmd)
             stdout.channel.recv_exit_status()
             
-            # Step 2: Lock URLs in wp-config.php as constants so WordPress can't auto-change them
-            # This prevents WordPress from detecting Host header mismatches and "correcting" the URLs
+            # Step 2: Lock URLs in wp-config.php using wp-cli
+            # This is more reliable than grep/sed parsing
             wp_config_cmd = f"""
-            sudo docker exec {customer_id} bash -c '
-            # Find the line before wp-settings.php require
-            line_num=$(grep -n "require_once ABSPATH . \'wp-settings.php\';" /var/www/html/wp-config.php | cut -d: -f1)
-            if [ ! -z "$line_num" ]; then
-                # Insert static URL definitions before wp-settings.php
-                sed -i "$((line_num-1))i /* Lock site URLs to prevent auto-correction */\\
-define(\\"WP_HOME\\", \\"{public_url}\\");\\
-define(\\"WP_SITEURL\\", \\"{public_url}\\");" /var/www/html/wp-config.php
-            fi
-            # Comment out dynamic URL detection that overrides static definitions
-            sed -i "/^define.*WP_HOME.*\\$proto/s/^/\\/\\/ /" /var/www/html/wp-config.php
-            sed -i "/^define.*WP_SITEURL.*\\$proto/s/^/\\/\\/ /" /var/www/html/wp-config.php
-            sed -i "/^define.*COOKIEPATH.*\\$prefix/s/^/\\/\\/ /" /var/www/html/wp-config.php
-            '
+            sudo docker exec {customer_id} wp config set WP_HOME "{public_url}" --type=constant --path=/var/www/html --allow-root
+            sudo docker exec {customer_id} wp config set WP_SITEURL "{public_url}" --type=constant --path=/var/www/html --allow-root
             """
             stdin, stdout, stderr = ssh.exec_command(wp_config_cmd)
             exit_status = stdout.channel.recv_exit_status()
