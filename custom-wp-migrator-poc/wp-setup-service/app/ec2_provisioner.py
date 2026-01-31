@@ -118,11 +118,18 @@ class EC2Provisioner:
                     'error_code': 'CONTAINER_START_FAILED',
                     'message': 'Failed to start Docker container'
                 }
-            
+
+            # 5.5. Wait for wp-cli to be ready before attempting activation
+            logger.info(f"Waiting for wp-cli to be ready in container {customer_id}...")
+            cli_ready = self._check_wordpress_cli_ready(instance_ip, customer_id, max_wait=180)
+
+            if not cli_ready:
+                logger.warning(f"⚠️ wp-cli not ready after 3 minutes, will attempt activation anyway...")
+
             # 6. Activate plugin and get API key directly (Bypass Browser)
             logger.info(f"Activating plugin directly in container {customer_id}...")
             api_key = self._activate_plugin_directly(instance_ip, customer_id)
-            
+
             if not api_key:
                 logger.warning("Failed to activate plugin via CLI, setup may fail")
             
@@ -673,44 +680,124 @@ location {path_prefix}/ {{
         
         return False
 
-    def _activate_plugin_directly(self, instance_ip: str, customer_id: str) -> Optional[str]:
-        """Activate plugin and set a fixed API key for the migration phase"""
+    def _check_wordpress_cli_ready(self, instance_ip: str, customer_id: str, max_wait: int = 180) -> bool:
+        """
+        Poll container until WordPress wp-cli is ready and responsive.
+        Uses exponential backoff for efficiency.
+
+        Args:
+            instance_ip: EC2 instance IP
+            customer_id: Container name
+            max_wait: Maximum seconds to wait (default 180 = 3 minutes)
+
+        Returns:
+            True if wp-cli is ready, False if timeout
+        """
         try:
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            
             ssh.connect(
                 instance_ip,
                 username='ec2-user',
                 key_filename=self.ssh_key_path,
                 timeout=30
             )
-            
+
+            logger.info(f"Checking if wp-cli is ready in container {customer_id}...")
+            start_time = time.time()
+            attempt = 0
+            wait_intervals = [2, 3, 5, 5, 10, 10, 15, 15, 20, 20]  # Progressive backoff
+
+            while time.time() - start_time < max_wait:
+                attempt += 1
+                wait_time = wait_intervals[min(attempt - 1, len(wait_intervals) - 1)]
+
+                try:
+                    # Test if wp-cli is functional with a simple command
+                    cmd = f"docker exec -u www-data {customer_id} wp --version --path=/var/www/html 2>&1"
+                    stdin, stdout, stderr = ssh.exec_command(cmd, timeout=10)
+
+                    # Set channel timeout to prevent indefinite hangs
+                    stdout.channel.settimeout(10)
+                    exit_status = stdout.channel.recv_exit_status()
+
+                    if exit_status == 0:
+                        output = stdout.read().decode('utf-8').strip()
+                        if 'WP-CLI' in output:
+                            elapsed = time.time() - start_time
+                            logger.info(f"✅ wp-cli ready in container {customer_id} (took {elapsed:.1f}s, attempt {attempt})")
+                            ssh.close()
+                            return True
+
+                    logger.debug(f"wp-cli not ready yet (attempt {attempt}), waiting {wait_time}s...")
+
+                except Exception as e:
+                    logger.debug(f"wp-cli check attempt {attempt} failed: {e}")
+
+                time.sleep(wait_time)
+
+            elapsed = time.time() - start_time
+            logger.warning(f"⚠️ wp-cli not ready after {elapsed:.1f}s ({attempt} attempts)")
+            ssh.close()
+            return False
+
+        except Exception as e:
+            logger.error(f"Failed to check wp-cli readiness: {e}")
+            return False
+
+    def _activate_plugin_directly(self, instance_ip: str, customer_id: str) -> Optional[str]:
+        """Activate plugin and set a fixed API key for the migration phase"""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+            ssh.connect(
+                instance_ip,
+                username='ec2-user',
+                key_filename=self.ssh_key_path,
+                timeout=30
+            )
+
             # Use a fixed key for the migration setup phase to avoid race conditions
             fixed_key = "migration-master-key"
-            
+
             # Retry a few times if the container is still installing
             for attempt in range(3):
-                commands = f"""
-                docker exec -u www-data {customer_id} wp plugin activate custom-migrator --path=/var/www/html
-                docker exec -u www-data {customer_id} wp option update custom_migrator_allow_import 1 --path=/var/www/html
-                docker exec -u www-data {customer_id} wp option update custom_migrator_api_key {fixed_key} --path=/var/www/html
-                """
-                
-                stdin, stdout, stderr = ssh.exec_command(commands)
-                exit_status = stdout.channel.recv_exit_status()
-                
-                if exit_status == 0:
-                    logger.info(f"Direct activation successful with fixed migration key")
-                    ssh.close()
-                    return fixed_key
-                
-                logger.warning(f"Activation attempt {attempt + 1} failed, retrying...")
-                time.sleep(5)
-            
+                try:
+                    commands = f"""
+                    docker exec -u www-data {customer_id} wp plugin activate custom-migrator --path=/var/www/html
+                    docker exec -u www-data {customer_id} wp option update custom_migrator_allow_import 1 --path=/var/www/html
+                    docker exec -u www-data {customer_id} wp option update custom_migrator_api_key {fixed_key} --path=/var/www/html
+                    """
+
+                    logger.debug(f"Plugin activation attempt {attempt + 1}/3 for {customer_id}")
+                    stdin, stdout, stderr = ssh.exec_command(commands, timeout=60)
+
+                    # Set channel timeout to prevent indefinite hangs (max 60 seconds per attempt)
+                    stdout.channel.settimeout(60)
+                    exit_status = stdout.channel.recv_exit_status()
+
+                    if exit_status == 0:
+                        logger.info(f"✅ Direct activation successful with fixed migration key")
+                        ssh.close()
+                        return fixed_key
+
+                    # Log stderr for debugging
+                    error_output = stderr.read().decode('utf-8').strip()
+                    if error_output:
+                        logger.warning(f"Activation attempt {attempt + 1} stderr: {error_output}")
+
+                    logger.warning(f"Activation attempt {attempt + 1} failed with exit status {exit_status}, retrying...")
+
+                except Exception as e:
+                    logger.warning(f"Activation attempt {attempt + 1} exception: {e}")
+
+                if attempt < 2:  # Don't sleep after last attempt
+                    time.sleep(5)
+
             ssh.close()
             return None
-                
+
         except Exception as e:
             logger.error(f"Direct activation exception: {e}")
             return None
