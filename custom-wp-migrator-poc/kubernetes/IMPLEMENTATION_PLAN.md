@@ -58,15 +58,20 @@ graph LR
     User[User/Client] -->|API Request| ALB[AWS ALB<br/>Load Balancer]
 
     subgraph EKS["EKS Cluster"]
-        ALB --> WP[wp-k8s-service<br/>FastAPI]
+        ALB --> WP[wp-k8s-service<br/>FastAPI<br/>⚡ Auto-scales via HPA]
 
         subgraph Control["Control Plane"]
             KRO[KRO<br/>Orchestrator]
             ACK[ACK<br/>RDS Controller]
+            HPA[Horizontal Pod<br/>Autoscaler]
+            CA[Cluster<br/>Autoscaler]
         end
 
+        HPA -.->|Scale Pods| WP
+        CA -.->|Add/Remove Nodes| Nodes[Worker Nodes<br/>🔄 Auto-scaling]
+
         WP -->|Create Clone| KRO
-        KRO -->|Manage| Clones[WordPress Clones<br/>Jobs + Services]
+        KRO -->|Manage| Clones[WordPress Clones<br/>Jobs + Services<br/>📈 On-demand scaling]
         KRO -->|Request DB| ACK
 
         Git[GitHub<br/>Repository] -.->|GitOps| ArgoCD[Argo CD]
@@ -78,21 +83,62 @@ graph LR
     ALB -->|Route /clone-*| Clones
 ```
 
+### Scaling & Reliability Features
+
+```mermaid
+graph TB
+    subgraph Load["Load Increases"]
+        Traffic[More /clone requests]
+    end
+
+    subgraph Auto["Automatic Scaling"]
+        HPA[Horizontal Pod Autoscaler<br/>Monitors: CPU/Memory/Custom Metrics]
+        CA[Cluster Autoscaler<br/>Monitors: Pod scheduling needs]
+        KRO_Scale[KRO Dynamic Provisioning<br/>Creates clones on-demand]
+    end
+
+    subgraph Resources["Resource Scaling"]
+        Pods[wp-k8s-service Pods<br/>Scale: 1-10 replicas]
+        Nodes[Worker Nodes<br/>Scale: 2-20 nodes]
+        Clones[WordPress Clones<br/>Scale: 0-100+ concurrent]
+    end
+
+    subgraph Reliability["High Availability"]
+        Health[Health Checks<br/>Liveness + Readiness probes]
+        Restart[Auto-restart failed pods]
+        RDS_HA[RDS Multi-AZ failover]
+        LB[ALB distributes traffic<br/>across healthy pods]
+    end
+
+    Traffic --> HPA
+    Traffic --> KRO_Scale
+
+    HPA -->|Scale up/down| Pods
+    Pods -->|Need more capacity| CA
+    CA -->|Add nodes| Nodes
+    KRO_Scale -->|Create/destroy| Clones
+
+    Pods -.-> Health
+    Health -.-> Restart
+    Clones -.-> RDS_HA
+    Pods -.-> LB
+```
+
 ### Namespace Isolation Strategy
 
 ```mermaid
 graph TB
     subgraph EKS["EKS Cluster"]
         subgraph Staging["wordpress-staging namespace"]
-            S_WP[wp-k8s-service]
-            S_Clones[WordPress Clones]
+            S_WP[wp-k8s-service<br/>1-3 replicas]
+            S_Clones[WordPress Clones<br/>Max 10 concurrent]
             S_RDS[(Shared RDS)]
             S_Clones --> S_RDS
         end
 
         subgraph Production["wordpress-production namespace"]
-            P_WP[wp-k8s-service]
-            P_Clones[WordPress Clones]
+            P_WP[wp-k8s-service<br/>2-10 replicas]
+            P_Clones[WordPress Clones<br/>Max 100 concurrent]
             P_RDS1[(RDS 1)]
             P_RDS2[(RDS 2)]
             P_Clones --> P_RDS1
