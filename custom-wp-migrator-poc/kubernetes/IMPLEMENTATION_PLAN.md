@@ -54,168 +54,54 @@ Migrating the WordPress Clone & Restore System from EC2/Docker to Kubernetes usi
 ### High-Level System Architecture
 
 ```mermaid
-graph TB
-    subgraph "External"
-        User[User/Client]
-        Git[Git Repository<br/>GitHub]
+graph LR
+    User[User/Client] -->|API Request| ALB[AWS ALB<br/>Load Balancer]
+
+    subgraph EKS["EKS Cluster"]
+        ALB --> WP[wp-k8s-service<br/>FastAPI]
+
+        subgraph Control["Control Plane"]
+            KRO[KRO<br/>Orchestrator]
+            ACK[ACK<br/>RDS Controller]
+        end
+
+        WP -->|Create Clone| KRO
+        KRO -->|Manage| Clones[WordPress Clones<br/>Jobs + Services]
+        KRO -->|Request DB| ACK
+
+        Git[GitHub<br/>Repository] -.->|GitOps| ArgoCD[Argo CD]
+        ArgoCD -.->|Deploy| WP
     end
 
-    subgraph "EKS Cluster"
-        subgraph "GitOps Layer"
-            ArgoCD[Argo CD<br/>GitOps Controller]
-        end
-
-        subgraph "Control Plane"
-            KRO[KRO<br/>Resource Orchestrator]
-            ACK_RDS[ACK RDS Controller]
-            ALB_Controller[AWS Load Balancer Controller]
-        end
-
-        subgraph "Staging Namespace"
-            WP_K8S_Staging[wp-k8s-service<br/>FastAPI]
-            Ingress_Staging[ALB Ingress<br/>Staging]
-        end
-
-        subgraph "Production Namespace"
-            WP_K8S_Prod[wp-k8s-service<br/>FastAPI]
-            Ingress_Prod[ALB Ingress<br/>Production]
-        end
-
-        subgraph "WordPress Clone ResourceGroups"
-            Clone1[WordPress Clone Job<br/>+ Service + Secret]
-            Clone2[WordPress Clone Job<br/>+ Service + Secret]
-            CloneN[WordPress Clone Job<br/>+ Service + Secret]
-        end
-    end
-
-    subgraph "AWS Resources"
-        RDS1[(RDS MySQL<br/>Clone 1)]
-        RDS2[(RDS MySQL<br/>Clone 2)]
-        RDSN[(RDS MySQL<br/>Clone N)]
-        ALB[Application Load Balancer<br/>Path-based Routing]
-        ECR[ECR<br/>Container Registry]
-    end
-
-    User -->|API Request<br/>/clone, /restore| ALB
-    ALB -->|Route| Ingress_Staging
-    ALB -->|Route| Ingress_Prod
-    Ingress_Staging --> WP_K8S_Staging
-    Ingress_Prod --> WP_K8S_Prod
-
-    WP_K8S_Staging -->|Create WordPressClone CR| KRO
-    WP_K8S_Prod -->|Create WordPressClone CR| KRO
-
-    KRO -->|Orchestrate| Clone1
-    KRO -->|Orchestrate| Clone2
-    KRO -->|Orchestrate| CloneN
-
-    KRO -->|Request DB| ACK_RDS
-    ACK_RDS -->|Provision| RDS1
-    ACK_RDS -->|Provision| RDS2
-    ACK_RDS -->|Provision| RDSN
-
-    Clone1 -.->|Connect| RDS1
-    Clone2 -.->|Connect| RDS2
-    CloneN -.->|Connect| RDSN
-
-    ALB_Controller -->|Manage| ALB
-    Ingress_Staging -.->|Configure| ALB_Controller
-    Ingress_Prod -.->|Configure| ALB_Controller
-
-    ALB -->|/clone-*| Clone1
-    ALB -->|/clone-*| Clone2
-    ALB -->|/clone-*| CloneN
-
-    Git -->|Pull Changes| ArgoCD
-    ArgoCD -->|Deploy/Update| WP_K8S_Staging
-    ArgoCD -->|Deploy/Update| WP_K8S_Prod
-
-    ECR -.->|Pull Images| Clone1
-    ECR -.->|Pull Images| Clone2
-    ECR -.->|Pull Images| CloneN
-```
-
-### Request Flow Sequence
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant ALB
-    participant wp-k8s-service
-    participant KRO
-    participant ACK
-    participant RDS as RDS MySQL
-    participant Clone as WordPress Clone
-
-    User->>ALB: POST /clone (source WP URL)
-    ALB->>wp-k8s-service: Forward request
-
-    Note over wp-k8s-service: Generate unique clone ID
-
-    wp-k8s-service->>KRO: Create WordPressClone CR
-
-    Note over KRO: Orchestrate ResourceGroup
-
-    KRO->>ACK: Create RDS DBInstance
-    ACK->>RDS: Provision MySQL database
-    RDS-->>ACK: DB Ready
-    ACK-->>KRO: DBInstance Created
-
-    KRO->>Clone: Create Job + Service + Secret + Ingress
-
-    Note over Clone: Container starts<br/>Wait for DB ready
-
-    Clone->>RDS: Connect to database
-    Clone->>Clone: Run wp-cli setup
-    Clone->>Clone: Activate migrator plugin
-    Clone->>Clone: Import from source
-
-    Clone-->>wp-k8s-service: Setup complete
-    wp-k8s-service-->>ALB: Clone URL + credentials
-    ALB-->>User: Response with clone URL
-
-    User->>ALB: Access /clone-{id}/*
-    ALB->>Clone: Route to WordPress
-    Clone-->>User: WordPress site
-
-    Note over Clone: After TTL expires<br/>(30-120 min)
-
-    Clone->>Clone: Job completes
-    KRO->>Clone: Delete Job + Service + Ingress
-    KRO->>ACK: Delete RDS DBInstance
-    ACK->>RDS: Terminate database
+    ACK -->|Provision| RDS[(RDS MySQL<br/>Databases)]
+    Clones -->|Connect| RDS
+    ALB -->|Route /clone-*| Clones
 ```
 
 ### Namespace Isolation Strategy
 
 ```mermaid
-graph LR
-    subgraph "EKS Cluster"
-        subgraph "wordpress-staging"
-            Staging_Service[wp-k8s-service]
-            Staging_Clones[Test Clones]
-            Staging_RDS[(Shared RDS MySQL)]
+graph TB
+    subgraph EKS["EKS Cluster"]
+        subgraph Staging["wordpress-staging namespace"]
+            S_WP[wp-k8s-service]
+            S_Clones[WordPress Clones]
+            S_RDS[(Shared RDS)]
+            S_Clones --> S_RDS
         end
 
-        subgraph "wordpress-production"
-            Prod_Service[wp-k8s-service]
-            Prod_Clones[Production Clones]
-            Prod_RDS1[(RDS MySQL 1)]
-            Prod_RDS2[(RDS MySQL 2)]
+        subgraph Production["wordpress-production namespace"]
+            P_WP[wp-k8s-service]
+            P_Clones[WordPress Clones]
+            P_RDS1[(RDS 1)]
+            P_RDS2[(RDS 2)]
+            P_Clones --> P_RDS1
+            P_Clones --> P_RDS2
         end
-
-        NetworkPolicy[Network Policies<br/>ResourceQuotas]
     end
 
-    Git_Staging[staging branch] -->|Argo CD| Staging_Service
-    Git_Main[main branch] -->|Argo CD| Prod_Service
-
-    NetworkPolicy -.->|Isolate| Staging_Service
-    NetworkPolicy -.->|Isolate| Prod_Service
-
-    Staging_Clones -->|All clones share| Staging_RDS
-    Prod_Clones -->|Each clone isolated| Prod_RDS1
-    Prod_Clones -->|Each clone isolated| Prod_RDS2
+    Git_Staging[staging branch] -->|Argo CD| S_WP
+    Git_Main[main branch] -->|Argo CD| P_WP
 ```
 
 ---
