@@ -67,8 +67,10 @@ class Custom_Migrator_Importer {
             $this->disable_maintenance_mode();
 
             // CRITICAL: Run post-import repair to prevent target corruption
+            // Skip flush_rewrite_rules for subdirectory clones (they use plain permalinks)
+            $skip_rewrite_flush = ($target_url_override !== null);
             $this->log('Running post-import repair to prevent corruption...');
-            $this->post_import_repair();
+            $this->post_import_repair($skip_rewrite_flush);
 
             // Fix .htaccess for subdirectory installations (clones)
             // MUST be done AFTER post_import_repair() because flush_rewrite_rules() overwrites .htaccess
@@ -741,8 +743,10 @@ class Custom_Migrator_Importer {
      * Run post-import repair to prevent target site corruption
      * This fixes the issue where after restore, the target site (bonnel.ai)
      * becomes corrupted and can't be used for subsequent restores
+     *
+     * @param bool $skip_rewrite_flush Skip flush_rewrite_rules for subdirectory clones
      */
-    private function post_import_repair() {
+    private function post_import_repair($skip_rewrite_flush = false) {
         try {
             // 1. Clear all WordPress caches
             wp_cache_flush();
@@ -754,9 +758,13 @@ class Custom_Migrator_Importer {
                 $this->log('✓ Cleared PHP OPcache');
             }
 
-            // 3. Flush rewrite rules
-            flush_rewrite_rules(true);
-            $this->log('✓ Flushed rewrite rules');
+            // 3. Flush rewrite rules (skip for subdirectory clones - they use minimal .htaccess)
+            if (!$skip_rewrite_flush) {
+                flush_rewrite_rules(true);
+                $this->log('✓ Flushed rewrite rules');
+            } else {
+                $this->log('⊘ Skipped flush_rewrite_rules (subdirectory clone - will use minimal .htaccess)');
+            }
 
             // 4. CRITICAL: Clear all sessions to prevent "session invalidation" error
             // This is the key fix for the "Navigation to plugins.php triggers session invalidation" issue
