@@ -488,7 +488,7 @@ location {path_prefix}/ {{
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Prefix {path_prefix};
-    
+
     # Rewrite redirects back through the path prefix
     proxy_redirect / {path_prefix}/;
 }}

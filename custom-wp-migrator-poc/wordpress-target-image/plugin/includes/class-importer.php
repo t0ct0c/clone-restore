@@ -54,26 +54,27 @@ class Custom_Migrator_Importer {
                 $this->create_or_update_admin_user($admin_user, $admin_password);
             }
             
-            // Fix .htaccess for subdirectory installations (clones)
-            if ($target_url_override) {
-                $this->fix_htaccess_for_subdirectory($target_url_override);
-            }
-            
             // Disable SiteGround plugins that cause redirect loops in subdirectory paths
             $this->disable_siteground_plugins();
-            
+
             // Cleanup
             $this->cleanup_temp_dir($extract_dir);
             if ($archive_url) {
                 unlink($archive_path);
             }
-            
+
             // Disable maintenance mode
             $this->disable_maintenance_mode();
 
             // CRITICAL: Run post-import repair to prevent target corruption
             $this->log('Running post-import repair to prevent corruption...');
             $this->post_import_repair();
+
+            // Fix .htaccess for subdirectory installations (clones)
+            // MUST be done AFTER post_import_repair() because flush_rewrite_rules() overwrites .htaccess
+            if ($target_url_override) {
+                $this->fix_htaccess_for_subdirectory($target_url_override);
+            }
 
             $this->log('Import completed successfully.');
             
