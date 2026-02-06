@@ -70,7 +70,11 @@ class Custom_Migrator_Importer {
             
             // Disable maintenance mode
             $this->disable_maintenance_mode();
-            
+
+            // CRITICAL: Run post-import repair to prevent target corruption
+            $this->log('Running post-import repair to prevent corruption...');
+            $this->post_import_repair();
+
             $this->log('Import completed successfully.');
             
             return array(
@@ -729,6 +733,83 @@ class Custom_Migrator_Importer {
             $this->log("Disabled $removed_count SiteGround plugin(s) to prevent redirect loops");
         } else {
             $this->log('No SiteGround plugins found to disable');
+        }
+    }
+
+    /**
+     * Run post-import repair to prevent target site corruption
+     * This fixes the issue where after restore, the target site (bonnel.ai)
+     * becomes corrupted and can't be used for subsequent restores
+     */
+    private function post_import_repair() {
+        try {
+            // 1. Clear all WordPress caches
+            wp_cache_flush();
+            $this->log('✓ Cleared WordPress object cache');
+
+            // 2. Clear PHP OPcache if available
+            if (function_exists('opcache_reset')) {
+                opcache_reset();
+                $this->log('✓ Cleared PHP OPcache');
+            }
+
+            // 3. Flush rewrite rules
+            flush_rewrite_rules(true);
+            $this->log('✓ Flushed rewrite rules');
+
+            // 4. CRITICAL: Clear all sessions to prevent "session invalidation" error
+            // This is the key fix for the "Navigation to plugins.php triggers session invalidation" issue
+            global $wpdb;
+
+            // Try to truncate sessions table (WordPress 4.0+)
+            $sessions_table = $wpdb->prefix . 'sessions';
+            if ($wpdb->get_var("SHOW TABLES LIKE '$sessions_table'") === $sessions_table) {
+                $wpdb->query("TRUNCATE TABLE $sessions_table");
+                $this->log('✓ Cleared sessions table (custom table)');
+            }
+
+            // Clear user sessions stored in usermeta (WP default)
+            $wpdb->query(
+                $wpdb->prepare(
+                    "DELETE FROM {$wpdb->usermeta} WHERE meta_key LIKE %s",
+                    'session_tokens'
+                )
+            );
+            $this->log('✓ Cleared all user session tokens');
+
+            // 5. Clear transients (temporary cached data)
+            $wpdb->query(
+                "DELETE FROM {$wpdb->options}
+                 WHERE option_name LIKE '_transient_%'
+                 OR option_name LIKE '_site_transient_%'"
+            );
+            $this->log('✓ Cleared all transients');
+
+            // 6. Restart Apache to reset all connections
+            $output = array();
+            $return_var = 0;
+            exec("service apache2 reload 2>&1", $output, $return_var);
+
+            if ($return_var === 0) {
+                $this->log('✓ Apache restarted successfully');
+            } else {
+                // Try alternative method
+                exec("apachectl graceful 2>&1", $output, $return_var);
+                if ($return_var === 0) {
+                    $this->log('✓ Apache restarted (graceful)');
+                } else {
+                    $this->log('⚠ Apache restart may have failed (non-critical)');
+                }
+            }
+
+            // 7. Clear any remaining WordPress object cache again (in case Apache restart loaded old values)
+            wp_cache_flush();
+
+            $this->log('✓ Post-import repair completed successfully');
+
+        } catch (Exception $e) {
+            // Log error but don't fail the import
+            $this->log('⚠ Post-import repair encountered error (non-critical): ' . $e->getMessage());
         }
     }
 
