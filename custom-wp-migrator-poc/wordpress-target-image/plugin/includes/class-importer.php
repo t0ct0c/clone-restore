@@ -54,6 +54,9 @@ class Custom_Migrator_Importer {
                 $this->create_or_update_admin_user($admin_user, $admin_password);
             }
             
+            // Fix active_plugins to ensure custom-migrator is active with correct path
+            $this->fix_active_plugins();
+
             // Disable SiteGround plugins that cause redirect loops in subdirectory paths
             $this->disable_siteground_plugins();
 
@@ -710,9 +713,52 @@ class Custom_Migrator_Importer {
         $this->log('Set permalink structure to plain (no rewrite rules required)');
     }
     
+    private function fix_active_plugins() {
+        global $wpdb;
+
+        // Get current active plugins from database
+        $active_plugins = get_option('active_plugins', array());
+        $this->log("Current active_plugins: " . json_encode($active_plugins));
+
+        // Fix custom-migrator path if it's wrong
+        $fixed_plugins = array();
+        $fixed = false;
+        foreach ($active_plugins as $plugin) {
+            // Fix wrong paths like "plugin/custom-migrator.php" -> "custom-migrator/custom-migrator.php"
+            if (strpos($plugin, 'custom-migrator') !== false && $plugin !== 'custom-migrator/custom-migrator.php') {
+                $fixed_plugins[] = 'custom-migrator/custom-migrator.php';
+                $this->log("Fixed custom-migrator path from '$plugin' to 'custom-migrator/custom-migrator.php'");
+                $fixed = true;
+            } else {
+                $fixed_plugins[] = $plugin;
+            }
+        }
+
+        // Ensure custom-migrator is in the list if not already
+        if (!in_array('custom-migrator/custom-migrator.php', $fixed_plugins)) {
+            $fixed_plugins[] = 'custom-migrator/custom-migrator.php';
+            $this->log("Added custom-migrator/custom-migrator.php to active plugins");
+            $fixed = true;
+        }
+
+        if ($fixed) {
+            // Update the database directly to ensure it persists
+            $wpdb->update(
+                $wpdb->options,
+                array('option_value' => serialize($fixed_plugins)),
+                array('option_name' => 'active_plugins'),
+                array('%s'),
+                array('%s')
+            );
+            // Clear the cache
+            wp_cache_delete('active_plugins', 'options');
+            $this->log("Fixed active_plugins in database");
+        }
+    }
+
     private function disable_siteground_plugins() {
         global $wpdb;
-        
+
         // SiteGround plugins that cause redirect loops in subdirectory installations
         $siteground_plugins = array(
             'sg-cachepress/sg-cachepress.php',
@@ -720,19 +766,28 @@ class Custom_Migrator_Importer {
             'wordpress-starter/siteground-wizard.php',
             'siteground-optimizer/siteground-optimizer.php'
         );
-        
-        // Get current active plugins
+
+        // Get current active plugins from database (after fix_active_plugins)
         $active_plugins = get_option('active_plugins', array());
         $original_count = count($active_plugins);
-        
+
         // Remove SiteGround plugins from active list
         $active_plugins = array_diff($active_plugins, $siteground_plugins);
         $active_plugins = array_values($active_plugins); // Re-index array
-        
+
         $removed_count = $original_count - count($active_plugins);
-        
+
         if ($removed_count > 0) {
-            update_option('active_plugins', $active_plugins);
+            // Update database directly
+            $wpdb->update(
+                $wpdb->options,
+                array('option_value' => serialize($active_plugins)),
+                array('option_name' => 'active_plugins'),
+                array('%s'),
+                array('%s')
+            );
+            // Clear the cache
+            wp_cache_delete('active_plugins', 'options');
             $this->log("Disabled $removed_count SiteGround plugin(s) to prevent redirect loops");
         } else {
             $this->log('No SiteGround plugins found to disable');
