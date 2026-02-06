@@ -38,6 +38,27 @@ class Custom_Migrator_API {
             'callback' => array(__CLASS__, 'handle_status'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));
+
+        // Repair endpoint
+        register_rest_route('custom-migrator/v1', '/repair', array(
+            'methods' => 'POST',
+            'callback' => array(__CLASS__, 'handle_repair'),
+            'permission_callback' => array(__CLASS__, 'verify_api_key')
+        ));
+
+        // Restart endpoint
+        register_rest_route('custom-migrator/v1', '/restart', array(
+            'methods' => 'POST',
+            'callback' => array(__CLASS__, 'handle_restart'),
+            'permission_callback' => array(__CLASS__, 'verify_api_key')
+        ));
+
+        // WP-CLI endpoint
+        register_rest_route('custom-migrator/v1', '/wp-cli', array(
+            'methods' => 'POST',
+            'callback' => array(__CLASS__, 'handle_wp_cli'),
+            'permission_callback' => array(__CLASS__, 'verify_api_key')
+        ));
     }
     
     public static function verify_api_key($request) {
@@ -149,5 +170,193 @@ class Custom_Migrator_API {
         }
         
         return new WP_REST_Response($status, 200);
+    }
+
+    public static function handle_repair($request) {
+        $params = $request->get_json_params();
+        if (empty($params)) {
+            $params = $request->get_body_params();
+        }
+
+        $action = isset($params['action']) ? $params['action'] : '';
+        $results = array();
+
+        switch ($action) {
+            case 'clear_cache':
+                wp_cache_flush();
+                $results['cache_cleared'] = true;
+                break;
+
+            case 'repair_db':
+                global $wpdb;
+                $tables = array(
+                    $wpdb->prefix . 'options',
+                    $wpdb->prefix . 'posts',
+                    $wpdb->prefix . 'postmeta',
+                    $wpdb->prefix . 'users',
+                    $wpdb->prefix . 'usermeta'
+                );
+                $repaired = 0;
+                foreach ($tables as $table) {
+                    $wpdb->query("REPAIR TABLE {$table}");
+                    $repaired++;
+                }
+                $results['tables_repaired'] = $repaired;
+                break;
+
+            case 'fix_urls':
+                $site_url = isset($params['site_url']) ? $params['site_url'] : '';
+                if ($site_url) {
+                    update_option('siteurl', $site_url);
+                    update_option('home', $site_url);
+                    $results['urls_updated'] = true;
+                    $results['site_url'] = $site_url;
+                } else {
+                    return new WP_Error(
+                        'missing_site_url',
+                        'site_url parameter required for fix_urls action',
+                        array('status' => 400)
+                    );
+                }
+                break;
+
+            case 'flush_rewrite':
+                flush_rewrite_rules(true);
+                $results['rewrite_flushed'] = true;
+                break;
+
+            case 'deactivate_plugins':
+                $active_plugins = get_option('active_plugins', array());
+                // Keep only the custom-migrator plugin active
+                $keep_active = array();
+                foreach ($active_plugins as $plugin) {
+                    if (strpos($plugin, 'custom-migrator') !== false) {
+                        $keep_active[] = $plugin;
+                    }
+                }
+                update_option('active_plugins', $keep_active);
+                $results['plugins_deactivated'] = count($active_plugins) - count($keep_active);
+                break;
+
+            case 'reset_permalinks':
+                update_option('permalink_structure', '/%postname%/');
+                flush_rewrite_rules(true);
+                $results['permalinks_reset'] = true;
+                break;
+
+            case 'clear_opcache':
+                if (function_exists('opcache_reset')) {
+                    opcache_reset();
+                    $results['opcache_cleared'] = true;
+                } else {
+                    $results['opcache_cleared'] = false;
+                    $results['message'] = 'OPcache not available';
+                }
+                break;
+
+            case 'full_repair':
+                // Run all repair operations
+                wp_cache_flush();
+                flush_rewrite_rules(true);
+                if (function_exists('opcache_reset')) {
+                    opcache_reset();
+                }
+                global $wpdb;
+                $tables = array(
+                    $wpdb->prefix . 'options',
+                    $wpdb->prefix . 'posts',
+                    $wpdb->prefix . 'postmeta'
+                );
+                foreach ($tables as $table) {
+                    $wpdb->query("REPAIR TABLE {$table}");
+                }
+                $results['full_repair_complete'] = true;
+                $results['operations'] = array('cache', 'rewrite', 'opcache', 'db_repair');
+                break;
+
+            default:
+                return new WP_Error(
+                    'invalid_action',
+                    'Invalid repair action. Valid actions: clear_cache, repair_db, fix_urls, flush_rewrite, deactivate_plugins, reset_permalinks, clear_opcache, full_repair',
+                    array('status' => 400)
+                );
+        }
+
+        return new WP_REST_Response(array(
+            'success' => true,
+            'action' => $action,
+            'results' => $results,
+            'timestamp' => current_time('mysql')
+        ), 200);
+    }
+
+    public static function handle_restart($request) {
+        $output = array();
+        $return_var = 0;
+
+        // Try to restart Apache
+        exec("service apache2 reload 2>&1", $output, $return_var);
+
+        // If Apache reload fails, try alternative methods
+        if ($return_var !== 0) {
+            exec("apachectl graceful 2>&1", $output, $return_var);
+        }
+
+        // Also clear OPcache if available
+        if (function_exists('opcache_reset')) {
+            opcache_reset();
+        }
+
+        return new WP_REST_Response(array(
+            'success' => $return_var === 0,
+            'message' => $return_var === 0 ? 'Server restart initiated' : 'Server restart may have failed',
+            'output' => implode("\n", $output),
+            'exit_code' => $return_var,
+            'timestamp' => current_time('mysql')
+        ), 200);
+    }
+
+    public static function handle_wp_cli($request) {
+        $params = $request->get_json_params();
+        if (empty($params)) {
+            $params = $request->get_body_params();
+        }
+
+        $command = isset($params['command']) ? $params['command'] : '';
+
+        if (empty($command)) {
+            return new WP_Error(
+                'no_command',
+                'Command parameter required',
+                array('status' => 400)
+            );
+        }
+
+        // Security: whitelist allowed command prefixes
+        $allowed_prefixes = array('cache', 'db', 'plugin', 'theme', 'option', 'user', 'rewrite', 'post', 'media');
+        $command_parts = explode(' ', trim($command));
+
+        if (!in_array($command_parts[0], $allowed_prefixes)) {
+            return new WP_Error(
+                'forbidden_command',
+                'Command not allowed. Allowed prefixes: ' . implode(', ', $allowed_prefixes),
+                array('status' => 403)
+            );
+        }
+
+        // Execute WP-CLI command
+        $output = array();
+        $return_var = 0;
+
+        $wp_cli_cmd = "wp {$command} --path=/var/www/html --allow-root 2>&1";
+        exec($wp_cli_cmd, $output, $return_var);
+
+        return new WP_REST_Response(array(
+            'success' => $return_var === 0,
+            'command' => $command,
+            'output' => implode("\n", $output),
+            'exit_code' => $return_var,
+            'timestamp' => current_time('mysql')
+        ), 200);
     }
 }
