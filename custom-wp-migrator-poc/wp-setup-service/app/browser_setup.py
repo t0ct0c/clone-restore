@@ -161,344 +161,284 @@ async def setup_wordpress_with_browser(
 
                 l.info("Successfully reached admin area")
 
-                # Step 2: Upload plugin
-                l.info("Step 2: Checking if plugin needs upload on plugins page")
+                # Step 2: Check if plugin is already active by trying settings page first
+                # SiteGround's SG Security forces reauth on plugins.php, so we avoid it
+                # Instead: check settings page → if plugin active, get key → done
+                #          if not active, go to plugin-install.php to upload (not plugins.php)
+                l.info("Step 2: Checking if plugin is already active via settings page")
                 plugin_slug = "custom-migrator"
+                plugin_already_active = False
+
+                await page.goto(
+                    f"{url}/wp-admin/options-general.php?page=custom-migrator-settings",
+                    wait_until="networkidle",
+                    timeout=60000,
+                )
+                l.info(f"Settings page URL: {page.url}")
+
+                # Check if we got redirected to login (reauth)
+                if "wp-login.php" in page.url:
+                    l.warning(f"Redirected to login from settings page: {page.url}")
+                    # Re-login - the redirect_to should bring us back to settings
+                    await page.wait_for_selector(
+                        'input[name="log"]', state="visible", timeout=30000
+                    )
+                    await page.fill('input[name="log"]', username)
+                    await page.fill('input[name="pwd"]', password)
+                    await page.click('input[name="wp-submit"]')
+                    await asyncio.sleep(5)
+                    l.info(f"After re-login from settings redirect: {page.url}")
+
+                # Check if the settings page has the API key field (plugin is active)
+                api_key_input = page.locator('input[name="custom_migrator_api_key"]')
+                try:
+                    await api_key_input.wait_for(state="visible", timeout=10000)
+                    plugin_already_active = True
+                    l.info("Plugin is already active - found API key field on settings page")
+                except Exception:
+                    l.info("Plugin settings page not found - plugin needs to be uploaded")
+
+                if plugin_already_active:
+                    # Plugin is active, get the API key directly
+                    api_key = await api_key_input.get_attribute("value")
+                    if api_key and (len(api_key) == 32 or api_key == "migration-master-key"):
+                        l.info(f"Retrieved API key from settings: {api_key[:8]}...")
+
+                        # Enable import if target role
+                        if role == "target":
+                            l.info("Enabling import on target")
+                            import_checkbox = page.locator(
+                                'input[name="custom_migrator_allow_import"]'
+                            )
+                            try:
+                                if await import_checkbox.count() > 0:
+                                    is_checked = await import_checkbox.is_checked(timeout=5000)
+                                    if not is_checked:
+                                        await import_checkbox.check(timeout=5000)
+                                        save_button = page.locator(
+                                            'input[type="submit"][name="submit"]'
+                                        )
+                                        await save_button.click(timeout=10000)
+                                        await page.wait_for_load_state("networkidle", timeout=30000)
+                                        l.info("Import enabled and settings saved")
+                                    else:
+                                        l.info("Import already enabled")
+                            except Exception as e:
+                                l.warning(f"Could not enable import: {e}, continuing anyway")
+
+                        return {
+                            "success": True,
+                            "api_key": api_key,
+                            "plugin_status": "active",
+                            "import_enabled": True if role == "target" else None,
+                            "message": "Plugin already active, retrieved API key from settings",
+                        }
+                    else:
+                        l.warning(f"API key field found but value invalid: '{api_key}', will re-upload plugin")
+                        plugin_already_active = False
+
+                # Plugin not active - need to upload it
+                # Go to plugin-install.php?tab=upload directly (avoids plugins.php reauth)
+                l.info("Step 2b: Plugin not active, navigating to plugin upload page")
                 plugins_page_loaded = False
 
                 for plugins_attempt in range(3):
                     try:
                         await page.goto(
-                            f"{url}/wp-admin/plugins.php",
+                            f"{url}/wp-admin/plugin-install.php?tab=upload",
                             wait_until="networkidle",
                             timeout=60000,
                         )
-                        # Wait for plugins table to load
-                        await page.wait_for_selector(".wp-list-table", timeout=30000)
+                        current_url = page.url
+                        l.info(f"Upload page attempt {plugins_attempt + 1}/3 - URL: {current_url}")
+
+                        if "wp-login.php" in current_url:
+                            l.warning("Redirected to login from upload page, re-logging in...")
+                            await page.wait_for_selector(
+                                'input[name="log"]', state="visible", timeout=30000
+                            )
+                            await page.fill('input[name="log"]', username)
+                            await page.fill('input[name="pwd"]', password)
+                            await page.click('input[name="wp-submit"]')
+                            await asyncio.sleep(5)
+                            l.info(f"After re-login: {page.url}")
+                            if "wp-login.php" in page.url:
+                                if plugins_attempt < 2:
+                                    await asyncio.sleep(3)
+                                continue
+
+                        # Check if we're on the upload page
+                        upload_form = page.locator('input[type="file"][name="pluginzip"]')
+                        await upload_form.wait_for(state="visible", timeout=30000)
                         plugins_page_loaded = True
+                        l.info("Plugin upload page loaded successfully")
                         break
                     except Exception as e:
                         l.warning(
-                            f"Plugins page load attempt {plugins_attempt + 1}/3 failed: {e}"
+                            f"Upload page attempt {plugins_attempt + 1}/3 failed: {e}"
                         )
                         if plugins_attempt < 2:
-                            l.info("Retrying plugins page after short delay...")
+                            l.info("Retrying after short delay...")
                             await asyncio.sleep(3)
 
                 if not plugins_page_loaded:
-                    # Plugins page won't load (common after restore due to SiteGround plugins)
-                    # Skip plugin upload/activation check and go directly to settings page
-                    # The importer's fix_active_plugins() ensures custom-migrator stays active
-                    l.warning(
-                        "Plugins page failed to load after 3 attempts. "
-                        "Skipping plugin check - assuming plugin is still active from previous restore. "
-                        "Going directly to settings page to retrieve API key."
-                    )
-
-                    # Jump directly to Step 4: Get API key
-                    l.info(
-                        "Step 4 (fast path): Navigating to plugin settings to retrieve API key"
-                    )
-                    await page.goto(
-                        f"{url}/wp-admin/options-general.php?page=custom-migrator-settings",
-                        wait_until="networkidle",
-                        timeout=60000,
-                    )
-
-                    api_key_input = page.locator(
-                        'input[name="custom_migrator_api_key"]'
-                    )
-                    try:
-                        await api_key_input.wait_for(state="visible", timeout=30000)
-                    except Exception:
-                        l.error("API key field not found on settings page (fast path)")
-                        l.info(f"Current URL: {page.url}, title: {await page.title()}")
-                        return {
-                            "success": False,
-                            "error_code": "PLUGINS_PAGE_TIMEOUT",
-                            "message": "Plugins page timed out and settings page did not show API key. "
-                            "The target site may need manual intervention.",
-                        }
-
-                    api_key = await api_key_input.get_attribute("value")
-                    if not api_key or (
-                        len(api_key) != 32 and api_key != "migration-master-key"
-                    ):
-                        l.error(f"Retrieved invalid API key on fast path: '{api_key}'")
-                        return {
-                            "success": False,
-                            "error_code": "INVALID_API_KEY",
-                            "message": f"Failed to retrieve valid API key. Got: {api_key}",
-                        }
-
-                    l.info(
-                        f"Successfully retrieved API key (fast path): {api_key[:8]}..."
-                    )
-
-                    # Enable import if target role
-                    if role == "target":
-                        l.info("Enabling import on target (fast path)")
-                        import_checkbox = page.locator(
-                            'input[name="custom_migrator_enable_import"]'
-                        )
-                        try:
-                            is_checked = await import_checkbox.is_checked(timeout=10000)
-                            if not is_checked:
-                                await import_checkbox.check(timeout=10000)
-                                save_button = page.locator(
-                                    'input[type="submit"][name="submit"]'
-                                )
-                                await save_button.click(timeout=10000)
-                                await page.wait_for_selector(
-                                    "text=Settings saved", timeout=30000
-                                )
-                                l.info("Import enabled and settings saved (fast path)")
-                            else:
-                                l.info("Import already enabled (fast path)")
-                        except Exception as e:
-                            l.warning(
-                                f"Could not enable import checkbox (fast path): {e}, continuing anyway"
-                            )
-
-                    return {
-                        "success": True,
-                        "api_key": api_key,
-                        "plugin_status": "assumed_active",
-                        "import_enabled": True if role == "target" else None,
-                        "message": "Browser-based setup completed (fast path - plugins page skipped)",
-                    }
-
-                content = await page.content()
-
-                if plugin_slug not in content:
-                    l.info("Plugin not found in list, navigating to upload page")
-                    await page.goto(
-                        f"{url}/wp-admin/plugin-install.php?tab=upload",
-                        wait_until="networkidle",
-                        timeout=60000,
-                    )
-
-                    if "wp-login.php" in page.url:
-                        l.error(
-                            "Session lost: redirected to login page during upload attempt"
-                        )
-                        return {
-                            "success": False,
-                            "error_code": "AUTH_LOST",
-                            "message": "Authentication session lost while navigating to upload",
-                        }
-
-                    # Upload the plugin zip
-                    l.info(f"Uploading plugin ZIP from path: {PLUGIN_ZIP_PATH}")
-
-                    # Check if the "Upload Plugin" button needs to be clicked first
-                    upload_toggle = page.locator(".upload-view-toggle")
-                    if (
-                        await upload_toggle.count() > 0
-                        and await upload_toggle.is_visible()
-                    ):
-                        l.info("Clicking 'Upload Plugin' toggle")
-                        await upload_toggle.click()
-
-                    file_input = page.locator('input[type="file"][name="pluginzip"]')
-                    await file_input.wait_for(state="attached", timeout=60000)
-
-                    l.info("Attaching plugin zip file")
-                    await file_input.set_input_files(PLUGIN_ZIP_PATH)
-
-                    l.info("Clicking 'Install Now' and waiting for completion")
-
-                    try:
-                        # Monitor outgoing requests to see if the upload actually starts
-                        upload_started = False
-
-                        async def log_request(request):
-                            nonlocal upload_started
-                            if request.method == "POST" and "update.php" in request.url:
-                                l.info(
-                                    f"Detected outgoing upload request: {request.url}"
-                                )
-                                upload_started = True
-
-                        page.on("request", log_request)
-
-                        # Try multiple common selectors for the install button
-                        submit_button = page.locator(
-                            'input[type="submit"][name="install-plugin-submit"], #install-plugin-submit, input[value="Install Now"]'
-                        )
-
-                        # Wait for the button to be present
-                        await submit_button.wait_for(state="attached", timeout=60000)
-
-                        l.info("Button found, clicking 'Install Now'")
-
-                        try:
-                            # Try a regular click with force=True and a shorter timeout
-                            await submit_button.click(
-                                delay=100, force=True, timeout=30000
-                            )
-                        except Exception as click_err:
-                            l.warning(
-                                f"Regular click failed: {click_err}. Trying JavaScript click fallback..."
-                            )
-                            await page.evaluate(
-                                "(sel) => { const el = document.querySelector(sel); if(el) el.click(); }",
-                                'input[type="submit"][name="install-plugin-submit"], #install-plugin-submit, input[value="Install Now"]',
-                            )
-
-                        # Wait a few seconds to see if it starts navigating
-                        await asyncio.sleep(5)
-
-                        if not upload_started:
-                            l.warning(
-                                "Click didn't seem to trigger an upload request. Attempting form submission via JavaScript..."
-                            )
-                            try:
-                                await page.evaluate(
-                                    '() => { const f = document.querySelector("form#plugin-upload-form, form.wp-upload-form"); if(f) f.submit(); }'
-                                )
-                            except Exception as eval_err:
-                                l.error(
-                                    f"JavaScript form submission failed: {eval_err}"
-                                )
-
-                        l.info("Waiting for result (navigation or error message)...")
-
-                        # Check progress every 15 seconds
-                        for attempt in range(1, 13):  # 12 * 15s = 180s
-                            try:
-                                # Wait for either the URL to change to update.php OR an error/success notice to appear
-                                await page.wait_for_function(
-                                    "() => window.location.href.includes('update.php') || document.querySelector('.error, .notice-error, .updated, .notice-success, #wp-admin-installer-error')",
-                                    timeout=15000,
-                                )
-                                break  # If it finishes waiting, we are done
-                            except Exception:
-                                l.info(
-                                    f"Wait attempt {attempt}/12: Still on {page.url}. Page title: {await page.title()}"
-                                )
-                                if (
-                                    attempt % 2 == 0
-                                ):  # Every 30s, log a bit of page content
-                                    body_text = await page.inner_text("body")
-                                    l.debug(
-                                        f"Current page text snippet: {body_text[:500].replace(chr(10), ' ')}"
-                                    )
-
-                        l.info(f"Final URL after upload attempt: {page.url}")
-
-                        # Remove listener
-                        page.remove_listener("request", log_request)
-
-                    except Exception as e:
-                        l.error(f"Upload POST request failed or timed out: {e}")
-                        # Log current page state
-                        l.info(f"Current URL after timeout: {page.url}")
-                        content = await page.content()
-                        if "error" in content.lower() or "forbidden" in content.lower():
-                            l.error("Page content contains error indicators")
-                        raise
-
-                    # Check for success message
-                    l.info("Checking for success or error messages...")
-                    try:
-                        await page.wait_for_selector(
-                            "text=Plugin installed successfully", timeout=30000
-                        )
-                        l.info("Success message 'Plugin installed successfully' found")
-                    except Exception as e:
-                        l.warning(
-                            f"Did not see 'Plugin installed successfully' message: {e}"
-                        )
-                        # Check for error messages
-                        error_locator = page.locator(".error, .notice-error")
-                        if await error_locator.count() > 0:
-                            error_text = await error_locator.first.inner_text()
-                            l.error(f"Upload error detected: {error_text}")
-                            raise Exception(f"Plugin upload failed: {error_text}")
-                        # Check if URL changed to indicate success despite missing message
-                        if "plugin-install.php?tab=upload" not in page.url:
-                            l.info(
-                                f"URL changed to {page.url}, assuming upload succeeded"
-                            )
-
-                    l.info(f"Upload flow complete, current URL: {page.url}")
-
-                    # Try to activate directly from the success page if the link exists
-                    activate_direct = page.locator('a:has-text("Activate Plugin")')
-                    if await activate_direct.count() > 0:
-                        l.info(
-                            "Found 'Activate Plugin' link on success page, clicking it directly"
-                        )
-                        async with page.expect_navigation(timeout=60000):
-                            await activate_direct.click()
-                        l.info("Direct activation complete")
-
-                    # Navigate back to plugins page to verify or activate if direct failed
-                    await page.goto(
-                        f"{url}/wp-admin/plugins.php",
-                        wait_until="networkidle",
-                        timeout=60000,
-                    )
-                else:
-                    l.info("Plugin already appears to be installed, skipping upload")
-
-                # Step 3: Activate plugin
-                l.info("Step 3: Activating plugin if inactive")
-                # Wait for plugins table
-                await page.wait_for_selector(".wp-list-table", timeout=30000)
-
-                plugin_row = page.locator(f"tr[data-slug='{plugin_slug}']")
-
-                if await plugin_row.count() == 0:
-                    l.info(
-                        f"Plugin slug '{plugin_slug}' not found, trying fallback 'custom-migrator.php' or name search"
-                    )
-                    # Try another common slug variant
-                    plugin_row = page.locator("tr[data-slug='custom-migrator.php']")
-                    if await plugin_row.count() == 0:
-                        plugin_row = page.locator("tr:has-text('Custom WP Migrator')")
-
-                if await plugin_row.count() > 0:
-                    deactivate_link = plugin_row.locator('a:has-text("Deactivate")')
-                    if await deactivate_link.count() > 0:
-                        l.info("Plugin is already active (Deactivate link present)")
-                    else:
-                        activate_link = plugin_row.locator('a:has-text("Activate")')
-                        if await activate_link.count() > 0:
-                            l.info("Found 'Activate' link, clicking it")
-                            await activate_link.click()
-                            await page.wait_for_load_state("networkidle", timeout=60000)
-                            l.info("Plugin activation command submitted")
-
-                            # Verify activation
-                            await page.goto(
-                                f"{url}/wp-admin/plugins.php",
-                                wait_until="networkidle",
-                                timeout=30000,
-                            )
-                            if "Deactivate" in await plugin_row.inner_text():
-                                l.info("Verified: Plugin is now active")
-                            else:
-                                l.warning(
-                                    "Could not verify activation on plugins page, continuing anyway"
-                                )
-                        else:
-                            l.warning(
-                                "Could not find either Activate or Deactivate link in plugin row"
-                            )
-                else:
-                    l.error(f"Plugin row for '{plugin_slug}' not found on plugins page")
-                    # Log the list of plugins found for debugging
-                    all_plugins = await page.locator("tr[data-slug]").evaluate_all(
-                        "(rows) => rows.map(r => r.getAttribute('data-slug'))"
-                    )
-                    l.info(f"Installed plugins: {all_plugins}")
+                    l.error("Could not load plugin upload page after 3 attempts")
                     return {
                         "success": False,
-                        "error_code": "PLUGIN_ROW_NOT_FOUND",
-                        "message": f"Plugin row for {plugin_slug} not found",
+                        "error_code": "UPLOAD_PAGE_TIMEOUT",
+                        "message": "Could not access plugin upload page. "
+                        "The hosting provider may be blocking admin page access.",
                     }
+
+                # We're on the upload page - upload the plugin zip
+                l.info(f"Uploading plugin ZIP from path: {PLUGIN_ZIP_PATH}")
+
+                # Check if the "Upload Plugin" button needs to be clicked first
+                upload_toggle = page.locator(".upload-view-toggle")
+                if (
+                    await upload_toggle.count() > 0
+                    and await upload_toggle.is_visible()
+                ):
+                    l.info("Clicking 'Upload Plugin' toggle")
+                    await upload_toggle.click()
+
+                file_input = page.locator('input[type="file"][name="pluginzip"]')
+                await file_input.wait_for(state="attached", timeout=60000)
+
+                l.info("Attaching plugin zip file")
+                await file_input.set_input_files(PLUGIN_ZIP_PATH)
+
+                l.info("Clicking 'Install Now' and waiting for completion")
+
+                try:
+                    # Monitor outgoing requests to see if the upload actually starts
+                    upload_started = False
+
+                    async def log_request(request):
+                        nonlocal upload_started
+                        if request.method == "POST" and "update.php" in request.url:
+                            l.info(
+                                f"Detected outgoing upload request: {request.url}"
+                            )
+                            upload_started = True
+
+                    page.on("request", log_request)
+
+                    # Try multiple common selectors for the install button
+                    submit_button = page.locator(
+                        'input[type="submit"][name="install-plugin-submit"], #install-plugin-submit, input[value="Install Now"]'
+                    )
+
+                    # Wait for the button to be present
+                    await submit_button.wait_for(state="attached", timeout=60000)
+
+                    l.info("Button found, clicking 'Install Now'")
+
+                    try:
+                        await submit_button.click(
+                            delay=100, force=True, timeout=30000
+                        )
+                    except Exception as click_err:
+                        l.warning(
+                            f"Regular click failed: {click_err}. Trying JavaScript click fallback..."
+                        )
+                        await page.evaluate(
+                            "(sel) => { const el = document.querySelector(sel); if(el) el.click(); }",
+                            'input[type="submit"][name="install-plugin-submit"], #install-plugin-submit, input[value="Install Now"]',
+                        )
+
+                    # Wait a few seconds to see if it starts navigating
+                    await asyncio.sleep(5)
+
+                    if not upload_started:
+                        l.warning(
+                            "Click didn't seem to trigger an upload request. Attempting form submission via JavaScript..."
+                        )
+                        try:
+                            await page.evaluate(
+                                '() => { const f = document.querySelector("form#plugin-upload-form, form.wp-upload-form"); if(f) f.submit(); }'
+                            )
+                        except Exception as eval_err:
+                            l.error(
+                                f"JavaScript form submission failed: {eval_err}"
+                            )
+
+                    l.info("Waiting for result (navigation or error message)...")
+
+                    # Check progress every 15 seconds
+                    for attempt in range(1, 13):  # 12 * 15s = 180s
+                        try:
+                            await page.wait_for_function(
+                                "() => window.location.href.includes('update.php') || document.querySelector('.error, .notice-error, .updated, .notice-success, #wp-admin-installer-error')",
+                                timeout=15000,
+                            )
+                            break
+                        except Exception:
+                            l.info(
+                                f"Wait attempt {attempt}/12: Still on {page.url}. Page title: {await page.title()}"
+                            )
+                            if attempt % 2 == 0:
+                                body_text = await page.inner_text("body")
+                                l.debug(
+                                    f"Current page text snippet: {body_text[:500].replace(chr(10), ' ')}"
+                                )
+
+                    l.info(f"Final URL after upload attempt: {page.url}")
+                    page.remove_listener("request", log_request)
+
+                except Exception as e:
+                    l.error(f"Upload POST request failed or timed out: {e}")
+                    l.info(f"Current URL after timeout: {page.url}")
+                    content = await page.content()
+                    if "error" in content.lower() or "forbidden" in content.lower():
+                        l.error("Page content contains error indicators")
+                    raise
+
+                # Check for success message
+                l.info("Checking for success or error messages...")
+                try:
+                    await page.wait_for_selector(
+                        "text=Plugin installed successfully", timeout=30000
+                    )
+                    l.info("Success message 'Plugin installed successfully' found")
+                except Exception as e:
+                    l.warning(
+                        f"Did not see 'Plugin installed successfully' message: {e}"
+                    )
+                    error_locator = page.locator(".error, .notice-error")
+                    if await error_locator.count() > 0:
+                        error_text = await error_locator.first.inner_text()
+                        l.error(f"Upload error detected: {error_text}")
+                        raise Exception(f"Plugin upload failed: {error_text}")
+                    if "plugin-install.php?tab=upload" not in page.url:
+                        l.info(
+                            f"URL changed to {page.url}, assuming upload succeeded"
+                        )
+
+                l.info(f"Upload flow complete, current URL: {page.url}")
+
+                # Step 3: Activate plugin directly from the upload success page
+                # AVOID plugins.php - SiteGround's SG Security forces reauth on it
+                l.info("Step 3: Activating plugin from upload success page")
+                activate_direct = page.locator('a:has-text("Activate Plugin")')
+                if await activate_direct.count() > 0:
+                    l.info(
+                        "Found 'Activate Plugin' link on success page, clicking it"
+                    )
+                    try:
+                        await activate_direct.click()
+                        await page.wait_for_load_state("networkidle", timeout=60000)
+                        l.info(f"Activation click done, current URL: {page.url}")
+                    except Exception as act_err:
+                        l.warning(f"Activation click failed: {act_err}")
+                else:
+                    l.warning(
+                        "No 'Activate Plugin' link found on success page. "
+                        "Plugin may already be active or activation link has different text."
+                    )
+                    page_text = await page.inner_text("body")
+                    if "activated" in page_text.lower():
+                        l.info("Page indicates plugin was already activated")
 
                 # Step 4: Get API key from plugin settings
                 l.info("Step 4: Navigating to plugin settings to retrieve API key")
@@ -507,6 +447,19 @@ async def setup_wordpress_with_browser(
                     wait_until="networkidle",
                     timeout=60000,
                 )
+                l.info(f"Settings page URL after navigation: {page.url}")
+
+                # Handle reauth redirect
+                if "wp-login.php" in page.url:
+                    l.warning("Redirected to login from settings page, re-logging in...")
+                    await page.wait_for_selector(
+                        'input[name="log"]', state="visible", timeout=30000
+                    )
+                    await page.fill('input[name="log"]', username)
+                    await page.fill('input[name="pwd"]', password)
+                    await page.click('input[name="wp-submit"]')
+                    await asyncio.sleep(5)
+                    l.info(f"After re-login: {page.url}")
 
                 # Wait for API key field
                 api_key_input = page.locator('input[name="custom_migrator_api_key"]')
@@ -514,8 +467,7 @@ async def setup_wordpress_with_browser(
                     await api_key_input.wait_for(state="visible", timeout=60000)
                 except Exception:
                     l.error("API key field not found on settings page")
-                    # Check if we're on the right page
-                    l.info(f"Current page title: {await page.title()}")
+                    l.info(f"Current URL: {page.url}, title: {await page.title()}")
                     return {
                         "success": False,
                         "error_code": "API_KEY_FIELD_NOT_FOUND",
@@ -559,7 +511,7 @@ async def setup_wordpress_with_browser(
                     )
 
                     import_checkbox = page.locator(
-                        'input[name="custom_migrator_enable_import"]'
+                        'input[name="custom_migrator_allow_import"]'
                     )
 
                     # Check if already checked with timeout
