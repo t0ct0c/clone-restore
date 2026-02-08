@@ -1,5 +1,12 @@
 # Design: Kubernetes Migration Architecture
 
+**Reference Documentation**:
+- [KUBERNETES_DEPLOYMENT_PLAN.md](../../KUBERNETES_DEPLOYMENT_PLAN.md) - Strategic migration plan with phased approach
+- [KUBERNETES_IMPLEMENTATION_GUIDE.md](../../KUBERNETES_IMPLEMENTATION_GUIDE.md) - Step-by-step implementation with code samples
+- [OPERATIONAL_MEMORY.md](../../OPERATIONAL_MEMORY.md) - Current EC2 system documentation and troubleshooting history
+
+**Target EKS Version**: 1.35
+
 ## Problem Statement
 
 The current EC2/Docker architecture requires:
@@ -693,3 +700,98 @@ jobs:
 4. **Cost Control**:
    - Delete EKS cluster if migration fails
    - Stop burning $73/mo EKS control plane cost
+
+## EC2 to Kubernetes Component Mapping
+
+The following table shows how each EC2/Docker component maps to its Kubernetes equivalent:
+
+| EC2/Docker Component | Kubernetes Equivalent | Notes |
+|---------------------|----------------------|-------|
+| **wp-setup-service** (EC2: 13.222.20.138:8000) | Deployment + Service + Ingress | FastAPI service with browser automation |
+| **WordPress clone containers** (Docker, ports 8021+) | Deployments/Jobs per clone | Managed by KRO ResourceGroups |
+| **MySQL containers** (Docker, per-clone) | StatefulSets or RDS via ACK | Start with SQLite, migrate to RDS |
+| **Nginx reverse proxy** (EC2 config files) | Kubernetes Ingress + ALB | AWS Load Balancer Controller |
+| **EC2Provisioner** (905 lines Python) | KROProvisioner (~100 lines) | 80% code reduction |
+| **SSH-based Docker commands** | Kubernetes API calls | Pure API, no SSH |
+| **Manual ALB listener rules** | Automatic via Ingress | ALB Controller handles rules |
+| **Port allocation tracking** | Kubernetes Service discovery | Automatic port management |
+| **Nginx config generation** | Ingress annotations | Declarative configuration |
+| **wp-targets-key.pem** | IRSA (IAM Roles for Service Accounts) | No SSH keys needed |
+
+## Current Infrastructure Reference
+
+### EC2 System (Running - Keep for Rollback)
+```
+Management Server: 13.222.20.138
+├── wp-setup-service (FastAPI, port 8000)
+├── Playwright + Camoufox (browser automation)
+└── SSH key: wp-targets-key.pem
+
+Target Server: 10.0.13.72
+├── WordPress clone containers (ports 8021+)
+├── MySQL containers (per-clone)
+└── Nginx reverse proxy
+
+ALB: wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com
+├── HTTPS Listener (ACM cert)
+├── Dynamic listener rules per clone
+└── Domain: clones.betaweb.ai
+```
+
+### Kubernetes System (Target)
+```
+EKS Cluster: wp-clone-restore (v1.35)
+├── wordpress-migration-system namespace
+│   └── wp-k8s-service Deployment (2-10 replicas)
+├── wordpress-clones namespace
+│   └── WordPress clone Deployments (managed by KRO)
+├── kro-system namespace
+│   └── KRO controller
+├── ack-system namespace
+│   └── ACK RDS controller
+└── argocd namespace
+    └── Argo CD (GitOps)
+
+Reuse Existing ALB
+├── Ingress annotations point to existing ALB
+├── Same ACM certificate
+└── Same domain: clones.betaweb.ai
+```
+
+## File Structure
+
+```
+/kubernetes/
+├── bootstrap/terraform/         # EKS cluster infrastructure (existing)
+│   ├── main.tf
+│   ├── vpc.tf
+│   ├── iam.tf
+│   ├── karpenter.tf
+│   └── outputs.tf
+├── wp-k8s-service/             # NEW: Kubernetes version of wp-setup-service
+│   ├── app/
+│   │   ├── main.py             # Copied from wp-setup-service, modified for KRO
+│   │   ├── kro_provisioner.py  # NEW: Replaces ec2_provisioner.py
+│   │   ├── browser_setup.py    # Copied, unchanged
+│   │   └── wp_auth.py          # Copied, unchanged
+│   ├── Dockerfile
+│   └── requirements.txt
+├── kro/                        # KRO ResourceGroup definitions
+│   └── resourcegroups/
+│       └── wordpress-clone.yaml
+├── manifests/                  # Kubernetes manifests
+│   ├── base/
+│   │   ├── wp-k8s-service/
+│   │   │   ├── deployment.yaml
+│   │   │   ├── service.yaml
+│   │   │   ├── ingress.yaml
+│   │   │   └── hpa.yaml
+│   │   └── namespaces/
+│   └── overlays/
+│       ├── staging/
+│       └── production/
+└── argocd/                     # GitOps configuration
+    └── applications/
+        ├── wp-k8s-staging.yaml
+        └── wp-k8s-production.yaml
+```

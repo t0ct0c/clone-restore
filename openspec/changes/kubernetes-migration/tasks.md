@@ -1,5 +1,14 @@
 # Tasks: Kubernetes Migration
 
+**Reference Documentation**:
+- [KUBERNETES_DEPLOYMENT_PLAN.md](../../KUBERNETES_DEPLOYMENT_PLAN.md) - High-level strategic plan
+- [KUBERNETES_IMPLEMENTATION_GUIDE.md](../../KUBERNETES_IMPLEMENTATION_GUIDE.md) - Step-by-step implementation guide
+
+**Target EKS Version**: 1.35
+**Current Status**: EKS cluster exists, need to migrate services from EC2/Docker
+
+---
+
 ## Phase 1: Bootstrap EKS Cluster + KRO + ACK + Argo CD (Week 1)
 
 ### Task 1.1: Create EKS Cluster with Terraform

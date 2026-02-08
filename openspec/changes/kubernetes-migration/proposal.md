@@ -1,5 +1,12 @@
 # Change: Kubernetes Migration for WordPress Clone & Restore System
 
+**Status**: In Progress  
+**Target EKS Version**: 1.35  
+**Reference Documentation**:
+- [KUBERNETES_DEPLOYMENT_PLAN.md](../../KUBERNETES_DEPLOYMENT_PLAN.md) - Strategic migration plan
+- [KUBERNETES_IMPLEMENTATION_GUIDE.md](../../KUBERNETES_IMPLEMENTATION_GUIDE.md) - Tactical implementation guide
+- [OPERATIONAL_MEMORY.md](../../OPERATIONAL_MEMORY.md) - Current EC2 system documentation
+
 ## Why
 
 The current EC2/Docker architecture has limitations that prevent scaling, observability, and operational excellence:
@@ -67,6 +74,20 @@ Migrate the WordPress Clone & Restore System from EC2/Docker to **Kubernetes-nat
 - **Learning Curve**: Team needs Kubernetes, KRO, ACK, Argo CD knowledge
 - **Migration Time**: 4-5 weeks for full migration with parallel testing
 - **EKS Control Plane Cost**: $73/mo fixed cost regardless of usage
+
+## Current Infrastructure Status
+
+**EKS Cluster**: `wp-clone-restore` (Target version: 1.35)
+- Terraform state exists at `/kubernetes/bootstrap/terraform/`
+- Namespaces: `wordpress-staging`, `wordpress-production`
+- AWS Load Balancer Controller: Configured via Karpenter
+- IRSA: Enabled for service accounts
+
+**Existing EC2 System (Running)**:
+- Management Server: `13.222.20.138` (wp-setup-service)
+- Target Server: `10.0.13.72` (WordPress clones)
+- ALB: `wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com`
+- Domain: `clones.betaweb.ai` (HTTPS with ACM cert)
 
 **Migration Strategy**:
 1. **Weeks 1-3**: Build Kubernetes infrastructure in parallel (existing system untouched)
