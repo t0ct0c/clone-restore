@@ -70,8 +70,14 @@ class Custom_Migrator_Importer {
             $this->disable_maintenance_mode();
 
             // CRITICAL: Run post-import repair to prevent target corruption
-            // Skip flush_rewrite_rules for subdirectory clones (they use plain permalinks)
-            $skip_rewrite_flush = ($target_url_override !== null);
+            // Skip flush_rewrite_rules ONLY for subdirectory clones (they use plain permalinks)
+            // Root domain restores (e.g. https://betaweb.ai) MUST flush to keep /wp-json/ working
+            $skip_rewrite_flush = false;
+            if ($target_url_override !== null) {
+                $parsed = parse_url($target_url_override);
+                $path = isset($parsed['path']) ? trim($parsed['path'], '/') : '';
+                $skip_rewrite_flush = !empty($path); // Only skip for subdirectory URLs
+            }
             $this->log('Running post-import repair to prevent corruption...');
             $this->post_import_repair($skip_rewrite_flush);
 
@@ -753,6 +759,47 @@ class Custom_Migrator_Importer {
             // Clear the cache
             wp_cache_delete('active_plugins', 'options');
             $this->log("Fixed active_plugins in database");
+        }
+
+        // Create a must-use plugin that ensures custom-migrator stays active
+        // MU-plugins load before regular plugins and cannot be deactivated
+        $mu_plugins_dir = WP_CONTENT_DIR . '/mu-plugins';
+        if (!file_exists($mu_plugins_dir)) {
+            mkdir($mu_plugins_dir, 0755, true);
+        }
+
+        $mu_plugin_file = $mu_plugins_dir . '/ensure-migrator-active.php';
+        $mu_plugin_content = <<<'MUPLUGIN'
+<?php
+/**
+ * Plugin Name: Ensure Migrator Active
+ * Description: Ensures custom-migrator plugin stays active after DB imports
+ * Version: 1.0
+ */
+
+// This runs very early (mu-plugins load before regular plugins).
+// Directly fix active_plugins in the DB so WordPress loads custom-migrator normally.
+$migrator_plugin = 'custom-migrator/custom-migrator.php';
+$plugin_file = WP_PLUGIN_DIR . '/' . $migrator_plugin;
+
+if (file_exists($plugin_file)) {
+    $active_plugins = get_option('active_plugins', array());
+    if (!in_array($migrator_plugin, $active_plugins)) {
+        $active_plugins[] = $migrator_plugin;
+        update_option('active_plugins', $active_plugins);
+        // Force WordPress to include this plugin in the current request too
+        if (file_exists($plugin_file)) {
+            include_once $plugin_file;
+        }
+    }
+}
+MUPLUGIN;
+
+        $result = file_put_contents($mu_plugin_file, $mu_plugin_content);
+        if ($result !== false) {
+            $this->log("Created mu-plugin to ensure custom-migrator stays active");
+        } else {
+            $this->log("WARNING: Failed to create mu-plugin for custom-migrator activation");
         }
     }
 

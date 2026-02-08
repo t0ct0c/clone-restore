@@ -20,42 +20,42 @@ class Custom_Migrator_API {
     public static function register_routes() {
         // Export endpoint
         register_rest_route('custom-migrator/v1', '/export', array(
-            'methods' => 'POST',
+            'methods' => WP_REST_Server::ALLMETHODS,
             'callback' => array(__CLASS__, 'handle_export'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));
         
         // Import endpoint
         register_rest_route('custom-migrator/v1', '/import', array(
-            'methods' => 'POST',
+            'methods' => WP_REST_Server::ALLMETHODS,
             'callback' => array(__CLASS__, 'handle_import'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));
         
         // Status endpoint
         register_rest_route('custom-migrator/v1', '/status', array(
-            'methods' => 'GET',
+            'methods' => WP_REST_Server::ALLMETHODS,
             'callback' => array(__CLASS__, 'handle_status'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));
 
         // Repair endpoint
         register_rest_route('custom-migrator/v1', '/repair', array(
-            'methods' => 'POST',
+            'methods' => WP_REST_Server::ALLMETHODS,
             'callback' => array(__CLASS__, 'handle_repair'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));
 
         // Restart endpoint
         register_rest_route('custom-migrator/v1', '/restart', array(
-            'methods' => 'POST',
+            'methods' => WP_REST_Server::ALLMETHODS,
             'callback' => array(__CLASS__, 'handle_restart'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));
 
         // WP-CLI endpoint
         register_rest_route('custom-migrator/v1', '/wp-cli', array(
-            'methods' => 'POST',
+            'methods' => WP_REST_Server::ALLMETHODS,
             'callback' => array(__CLASS__, 'handle_wp_cli'),
             'permission_callback' => array(__CLASS__, 'verify_api_key')
         ));

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "fetch": {
+      "type": "local",
+      "command": [".venv/bin/python", "-m", "mcp_server_fetch"],
+      "enabled": true
+    },
+    "memory": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-memory"],
+      "enabled": true
+    },
+    "sequential-thinking": {
+      "type": "local",
+      "command": ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "enabled": true
+    },
+    "code-index": {
+      "type": "local",
+      "command": ["uvx", "code-index-mcp"],
+      "enabled": true
+    },
+    "aws-eks-mcp": {
+      "type": "local",
+      "command": ["uvx", "awslabs.eks-mcp-server@latest", "--allow-write", "--allow-sensitive-data-access"],
+      "enabled": true,
+      "environment": {
+        "AWS_REGION": "us-east-1",
+        "FASTMCP_LOG_LEVEL": "INFO"
+      }
+    },
+    "terraform-mcp": {
+      "type": "local",
+      "command": ["uvx", "awslabs.terraform-mcp-server@latest"],
+      "enabled": true
+    }
+  }
+}

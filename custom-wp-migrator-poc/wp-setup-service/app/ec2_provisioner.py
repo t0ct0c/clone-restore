@@ -31,8 +31,8 @@ class EC2Provisioner:
         # Configuration (should be environment variables in production)
         self.asg_name = 'wp-targets-asg'
         self.docker_image = '044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest'
-        self.alb_dns = 'wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com'
-        self.alb_listener_arn = 'arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/e906e470d368d461'
+        self.alb_dns = 'clones.betaweb.ai'
+        self.alb_listener_arn = 'arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/f6542ccc3f16bfd7'
         self.target_group_arn = 'arn:aws:elasticloadbalancing:us-east-1:044514005641:targetgroup/wp-targets-tg/08695f0f6e7e5fbf'
         self.management_ip = '10.0.4.2' # Private IP of the management host running Loki/Tempo
         self.ssh_key_path = '/app/ssh/wp-targets-key.pem'
@@ -155,7 +155,7 @@ class EC2Provisioner:
             # 9. Wait for health check
             # Use direct instance URL for WordPress setup (authentication)
             direct_url = f"http://{instance_ip}:{port}"
-            alb_url = f"http://{self.alb_dns}{path_prefix}"
+            alb_url = f"https://{self.alb_dns}{path_prefix}"
             
             if not self._wait_for_health(direct_url):
                 logger.warning("Health check failed but returning URL anyway")
@@ -485,7 +485,7 @@ location {path_prefix}/ {{
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
     proxy_set_header X-Forwarded-Host $host;
     proxy_set_header X-Forwarded-Prefix {path_prefix};
 
@@ -609,6 +609,74 @@ location {path_prefix}/ {{
             
         except Exception as e:
             logger.warning(f"Failed to reload Apache in container: {e}")
+            return False
+    
+    def activate_plugin_in_container(self, instance_ip: str, customer_id: str, plugin_slug: str = "custom-migrator") -> bool:
+        """Activate a plugin inside a WordPress container via WP-CLI.
+        
+        The clone import process deactivates plugins, so this must be called
+        after import to re-enable the migrator plugin on the clone.
+        """
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            ssh.connect(
+                instance_ip,
+                username='ec2-user',
+                key_filename=self.ssh_key_path,
+                timeout=30
+            )
+            
+            docker_cmd = f"sudo docker exec {customer_id} wp plugin activate {plugin_slug} --path=/var/www/html --allow-root"
+            stdin, stdout, stderr = ssh.exec_command(docker_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            output = stdout.read().decode().strip()
+            
+            ssh.close()
+            
+            if exit_status == 0:
+                logger.info(f"Plugin '{plugin_slug}' activated in container {customer_id}: {output}")
+                return True
+            else:
+                error = stderr.read().decode().strip()
+                logger.error(f"Plugin activation failed in {customer_id}: {error}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to activate plugin in container {customer_id}: {e}")
+            return False
+    
+    def run_wp_cli_in_container(self, instance_ip: str, customer_id: str, wp_cli_command: str) -> bool:
+        """Run an arbitrary WP-CLI command inside a WordPress container via SSH."""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            ssh.connect(
+                instance_ip,
+                username='ec2-user',
+                key_filename=self.ssh_key_path,
+                timeout=30
+            )
+            
+            docker_cmd = f"sudo docker exec {customer_id} wp {wp_cli_command} --path=/var/www/html --allow-root"
+            stdin, stdout, stderr = ssh.exec_command(docker_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            output = stdout.read().decode().strip()
+            
+            ssh.close()
+            
+            if exit_status == 0:
+                logger.info(f"WP-CLI '{wp_cli_command}' in {customer_id}: {output}")
+                return True
+            else:
+                error = stderr.read().decode().strip()
+                logger.error(f"WP-CLI '{wp_cli_command}' failed in {customer_id}: {error}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to run WP-CLI in {customer_id}: {e}")
             return False
     
     def update_wordpress_urls(self, instance_ip: str, customer_id: str, public_url: str) -> bool:

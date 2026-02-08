@@ -30,6 +30,51 @@ from .ec2_provisioner import EC2Provisioner
 from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser
 
 
+def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
+    """Build a WordPress REST API URL.
+    
+    For GET: always use ?rest_route= (works regardless of permalink settings).
+    For POST: use /wp-json/ (SiteGround blocks POST to ?rest_route=).
+    For clone URLs (contain /clone-): always use ?rest_route= (plain permalinks).
+    """
+    base = base_url.rstrip("/")
+    is_clone = "/clone-" in base
+    if method.upper() == "GET" or is_clone:
+        return f"{base}/?rest_route={route}"
+    else:
+        return f"{base}/wp-json{route}"
+
+
+def _post_rest_api(base_url: str, route: str, headers: dict, timeout: int,
+                   json_data: dict = None) -> requests.Response:
+    """POST to a WordPress REST API endpoint with automatic fallback.
+    
+    Tries in order:
+    1. POST /wp-json/ (standard, works when rewrite rules are intact)
+    2. POST ?rest_route= (works on clones with plain permalinks)
+    3. GET ?rest_route= (ultimate fallback - SiteGround blocks POST to ?rest_route=
+       for custom routes, but GET always works; plugin routes accept ALLMETHODS)
+    """
+    base = base_url.rstrip("/")
+    primary_url = _rest_url(base, route, "POST")
+    
+    resp = requests.post(primary_url, headers=headers, json=json_data, timeout=timeout)
+    
+    # If primary failed with 404 and we used /wp-json/, try POST ?rest_route=
+    if resp.status_code == 404 and "/wp-json/" in primary_url:
+        fallback_url = f"{base}/?rest_route={route}"
+        logger.info(f"POST to {primary_url} got 404, trying POST fallback: {fallback_url}")
+        resp = requests.post(fallback_url, headers=headers, json=json_data, timeout=timeout)
+    
+    # If POST ?rest_route= also failed with 404, try GET ?rest_route= (SiteGround workaround)
+    if resp.status_code == 404:
+        get_url = f"{base}/?rest_route={route}"
+        logger.info(f"POST failed with 404, trying GET fallback: {get_url}")
+        resp = requests.get(get_url, headers=headers, json=json_data, timeout=timeout)
+    
+    return resp
+
+
 # Configure loguru
 import sys
 
@@ -437,8 +482,8 @@ def perform_clone(
     try:
         # Step 1: Export from source
         logger.info("Exporting from source...")
-        export_response = requests.post(
-            f"{source_url}/wp-json/custom-migrator/v1/export",
+        export_response = _post_rest_api(
+            source_url, "/custom-migrator/v1/export",
             headers={"X-Migrator-Key": source_api_key},
             timeout=TIMEOUT,
         )
@@ -472,13 +517,13 @@ def perform_clone(
             import_payload["admin_user"] = admin_user
             import_payload["admin_password"] = admin_password
 
-        import_response = requests.post(
-            f"{target_url}/wp-json/custom-migrator/v1/import",
+        import_response = _post_rest_api(
+            target_url, "/custom-migrator/v1/import",
             headers={
                 "X-Migrator-Key": target_api_key,
                 "Content-Type": "application/json",
             },
-            json=import_payload,
+            json_data=import_payload,
             timeout=TIMEOUT,
         )
 
@@ -538,17 +583,10 @@ def perform_restore(
         # Step 1: Export from source (staging/backup)
         logger.info("Exporting from source...")
 
-        # Use query string format for clones (plain permalinks), pretty permalinks for others
-        if is_clone_source:
-            export_url = (
-                f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/export"
-            )
-        else:
-            export_url = f"{source_url.rstrip('/')}/wp-json/custom-migrator/v1/export"
-
-        logger.info(f"Export URL: {export_url}")
-        export_response = requests.post(
-            export_url, headers={"X-Migrator-Key": source_api_key}, timeout=TIMEOUT
+        export_response = _post_rest_api(
+            source_url, "/custom-migrator/v1/export",
+            headers={"X-Migrator-Key": source_api_key},
+            timeout=TIMEOUT,
         )
 
         if export_response.status_code != 200:
@@ -584,20 +622,20 @@ def perform_restore(
             "archive_url": archive_url,
             "preserve_plugins": preserve_plugins,
             "preserve_themes": preserve_themes,
-            "public_url": target_url,
+            "public_url": target_url.rstrip("/"),
         }
 
         if admin_user and admin_password:
             import_payload["admin_user"] = admin_user
             import_payload["admin_password"] = admin_password
 
-        import_response = requests.post(
-            f"{target_url}/wp-json/custom-migrator/v1/import",
+        import_response = _post_rest_api(
+            target_url, "/custom-migrator/v1/import",
             headers={
                 "X-Migrator-Key": target_api_key,
                 "Content-Type": "application/json",
             },
-            json=import_payload,
+            json_data=import_payload,
             timeout=TIMEOUT,
         )
 
@@ -822,6 +860,28 @@ async def clone_endpoint(request: CloneRequest):
             detail=clone_result.get("message", "Clone failed"),
         )
 
+    # Re-activate the migrator plugin on the clone and set a known API key
+    # (import process deactivates plugin and clone inherits source's API key)
+    if provisioned_target_info and provisioned_target_info.get("instance_ip"):
+        instance_ip = provisioned_target_info["instance_ip"]
+        customer_id = provisioned_target_info["customer_id"]
+        provisioner = EC2Provisioner()
+
+        logger.info("Re-activating custom-migrator plugin on clone container...")
+        provisioner.activate_plugin_in_container(instance_ip, customer_id)
+
+        # Set API key to migration-master-key so restore endpoint can use a known key
+        logger.info("Setting clone API key to migration-master-key...")
+        provisioner.run_wp_cli_in_container(
+            instance_ip, customer_id,
+            "option update custom_migrator_api_key migration-master-key"
+        )
+        # Also enable import on the clone
+        provisioner.run_wp_cli_in_container(
+            instance_ip, customer_id,
+            "option update custom_migrator_allow_import 1"
+        )
+
     # Reload Apache in auto-provisioned containers to reset database connections
     # This is required because SQLite connections become stale after import
     if provisioned_target_info and provisioned_target_info.get("instance_ip"):
@@ -874,43 +934,65 @@ async def restore_endpoint(request: RestoreRequest):
     # Check if source is a clone (uses plain permalinks with query string format)
     is_clone_source = "/clone-" in source_url
 
-    # Skip browser automation for clones - they always use migration-master-key
+    # Skip browser automation for clones - auto-detect the API key
+    # Clones inherit the source site's API key, which may not be migration-master-key
     if is_clone_source:
-        logger.info(
-            f"Source is a clone, skipping browser automation (using known API key)"
-        )
-        source_api_key = "migration-master-key"
+        logger.info("Source is a clone, auto-detecting API key...")
+        source_api_key = None
+        candidate_keys = ["migration-master-key"]
 
-        # Pre-check: verify clone is healthy before proceeding with expensive target setup
+        # Pre-check: verify clone is healthy and find working API key
         logger.info("Verifying clone source is healthy...")
-        try:
-            health_url = (
-                f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status"
-            )
-            health_resp = requests.get(
-                health_url, headers={"X-Migrator-Key": source_api_key}, timeout=15
-            )
-            if health_resp.status_code != 200:
-                # Check if the response is a WordPress DB error page
-                resp_text = health_resp.text
-                if "Error establishing a database connection" in resp_text:
-                    raise HTTPException(
-                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                        detail=(
-                            f"Source clone database is unreachable. "
-                            f"The MySQL database for this clone may have been lost due to a MySQL container restart. "
-                            f"Please create a new clone using the /clone endpoint and retry with the new clone URL."
-                        ),
-                    )
-                logger.warning(
-                    f"Clone health check returned {health_resp.status_code}: {resp_text[:200]}"
+        health_url = (
+            f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status"
+        )
+
+        for candidate_key in candidate_keys:
+            try:
+                health_resp = requests.get(
+                    health_url, headers={"X-Migrator-Key": candidate_key}, timeout=15
                 )
-        except requests.RequestException as e:
-            logger.warning(f"Clone health check failed: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Source clone is unreachable: {str(e)}. The clone may have expired or been cleaned up.",
+                if health_resp.status_code == 200:
+                    source_api_key = candidate_key
+                    logger.info(f"Clone API key found: {candidate_key[:10]}...")
+                    break
+                elif health_resp.status_code == 403:
+                    logger.info(f"Key '{candidate_key[:10]}...' rejected (403), trying next...")
+                else:
+                    resp_text = health_resp.text
+                    if "Error establishing a database connection" in resp_text:
+                        raise HTTPException(
+                            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail=(
+                                f"Source clone database is unreachable. "
+                                f"The MySQL database for this clone may have been lost due to a MySQL container restart. "
+                                f"Please create a new clone using the /clone endpoint and retry with the new clone URL."
+                            ),
+                        )
+                    logger.warning(
+                        f"Clone health check returned {health_resp.status_code} with key '{candidate_key[:10]}...': {resp_text[:200]}"
+                    )
+            except requests.RequestException as e:
+                logger.warning(f"Clone health check failed: {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Source clone is unreachable: {str(e)}. The clone may have expired or been cleaned up.",
+                )
+
+        if source_api_key is None:
+            # None of the candidate keys worked - fall back to browser automation
+            # to retrieve the actual API key from the clone's settings page
+            logger.info("No candidate key worked for clone, falling back to browser automation...")
+            source_result = await setup_wordpress_with_browser(
+                source_url, request.source.username, request.source.password, role="source"
             )
+            if not source_result.get("success"):
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Source clone setup failed: {source_result.get('message')}",
+                )
+            source_api_key = source_result["api_key"]
+            logger.info(f"Got clone API key via browser: {source_api_key[:10]}...")
     else:
         # Use browser automation for regular WordPress sites
         logger.info(f"Setting up source (regular site)...")
@@ -925,90 +1007,18 @@ async def restore_endpoint(request: RestoreRequest):
             )
         source_api_key = source_result["api_key"]
 
-    # Setup target (production)
-    # First try REST API fast-path: after a previous restore from a clone,
-    # the target DB inherits migration-master-key as the API key.
-    # If the plugin REST API responds, we can skip expensive browser automation.
+    # Setup target (production) - ALWAYS use browser automation.
+    # SiteGround caches REST API responses and the plugin becomes inactive after
+    # every restore (DB replacement). Browser automation reliably uploads a fresh
+    # plugin and activates it every time.
     target_url = str(request.target.url).rstrip("/")
-    target_result = None
-
-    logger.info("Attempting REST API fast-path for target setup...")
-    candidate_keys = ["migration-master-key"]
-    for candidate_key in candidate_keys:
-        try:
-            status_url = f"{target_url}/wp-json/custom-migrator/v1/status"
-            status_resp = requests.get(
-                status_url,
-                headers={"X-Migrator-Key": candidate_key},
-                timeout=15,
-            )
-            if status_resp.status_code == 200:
-                status_data = status_resp.json()
-                logger.info(
-                    f"REST API fast-path succeeded with key '{candidate_key[:10]}...': {status_data}"
-                )
-
-                # Check if import is already allowed
-                import_allowed = status_data.get("import_allowed", False)
-                if not import_allowed:
-                    # Try to enable import via WP-CLI REST endpoint
-                    logger.info("Import not enabled, attempting to enable via WP-CLI REST endpoint...")
-                    try:
-                        enable_resp = requests.post(
-                            f"{target_url}/wp-json/custom-migrator/v1/wp-cli",
-                            headers={
-                                "X-Migrator-Key": candidate_key,
-                                "Content-Type": "application/json",
-                            },
-                            json={"command": "option update custom_migrator_allow_import 1"},
-                            timeout=15,
-                        )
-                        if enable_resp.status_code == 200:
-                            logger.info("Successfully enabled import via WP-CLI REST endpoint")
-                            import_allowed = True
-                        else:
-                            logger.warning(
-                                f"WP-CLI enable import returned {enable_resp.status_code}, "
-                                "falling back to browser automation..."
-                            )
-                    except requests.RequestException as e:
-                        logger.warning(f"WP-CLI enable import failed: {e}, falling back to browser...")
-
-                    if not import_allowed:
-                        # Fall through to browser automation to enable import
-                        break
-
-                target_result = {
-                    "success": True,
-                    "api_key": candidate_key,
-                    "plugin_status": "active",
-                    "import_enabled": True,
-                    "message": "REST API fast-path: plugin active, import enabled",
-                }
-                logger.info("Target setup completed via REST API fast-path (no browser needed)")
-                break
-            elif status_resp.status_code in (401, 403):
-                logger.info(
-                    f"Plugin active but key '{candidate_key[:10]}...' rejected (HTTP {status_resp.status_code})"
-                )
-            elif status_resp.status_code == 404:
-                logger.info("Plugin REST routes not found (404) - plugin may be inactive")
-            else:
-                logger.info(
-                    f"Target status check returned {status_resp.status_code} with key '{candidate_key[:10]}...'"
-                )
-        except requests.RequestException as e:
-            logger.info(f"REST API fast-path failed for key '{candidate_key[:10]}...': {e}")
-
-    # Fall back to browser automation if REST API fast-path didn't work
-    if target_result is None:
-        logger.info("REST API fast-path did not succeed, falling back to browser automation...")
-        target_result = await setup_wordpress_with_browser(
-            target_url,
-            request.target.username,
-            request.target.password,
-            role="target",
-        )
+    logger.info("Setting up target via browser automation (ensures fresh plugin)...")
+    target_result = await setup_wordpress_with_browser(
+        target_url,
+        request.target.username,
+        request.target.password,
+        role="target",
+    )
 
     if not target_result.get("success"):
         raise HTTPException(

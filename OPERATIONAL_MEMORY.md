@@ -1,6 +1,6 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-01-27
+**Last Updated**: 2026-02-07
 
 ## Current Status Summary
 
@@ -10,16 +10,19 @@
 - **Browser automation**: Logs in, uploads plugin, activates, retrieves API key
 - **Response format**: Returns URL, username, password, expiration time
 - **ALB path-based routing**: Dynamic listener rules route each clone to correct instance
-- **Frontend access**: Clone homepages and content accessible via ALB URLs
+- **HTTPS clone URLs**: All clones served via `https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/`
+- **Frontend access**: Clone homepages and content accessible via HTTPS
 - **wp-admin access**: Login pages load correctly (with wp-admin.php redirect)
 - **REST API**: Export/import endpoints fully functional on clones
 - **Restore workflow**: Clone → production restore working end-to-end
+- **Multiple restores**: Unlimited consecutive restores to same target (browser automation re-activates plugin each time)
 
 ### 🎯 System Ready for Production Use
 All core functionality is working. The system can:
 1. Clone any WordPress site to temporary AWS containers
 2. Make changes safely on clones
 3. Restore changes back to production with theme/plugin preservation options
+4. Perform unlimited consecutive restores reliably (SiteGround compatible)
 
 ## Infrastructure Overview
 
@@ -40,8 +43,12 @@ All core functionality is working. The system can:
 
 ### Load Balancer
 - **ALB DNS**: wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com
+- **Custom Domain**: clones.betaweb.ai (CNAME → ALB DNS)
+- **HTTPS**: ACM cert `arn:aws:acm:us-east-1:044514005641:certificate/c3fb5ab3-160f-4db2-ac4b-056fe7166558`
+- **HTTPS Listener ARN**: `arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/f6542ccc3f16bfd7`
+- **HTTP Listener**: Redirects 301 → HTTPS
 - **Path-based routing**: /clone-YYYYMMDD-HHMMSS/
-- **Target**: Routes to Nginx on 10.0.13.72
+- **Target**: Routes to Nginx on EC2 instances
 
 ## Successfully Resolved Issues
 
@@ -114,6 +121,83 @@ All core functionality is working. The system can:
 ## Current Active Issues
 
 None - all core functionality is working.
+
+---
+
+## SiteGround Restore Debugging History (2026-02-07)
+
+### The Problem
+After restoring a clone to betaweb.ai (SiteGround), the custom-migrator plugin becomes inactive on the next request. This means any subsequent restore fails because the import REST API endpoint returns 404 `rest_no_route` — the routes simply don't exist because the plugin isn't loaded.
+
+### What Was Tried and DIDN'T Work
+
+#### 1. REST API fast-path (GET status check before restore)
+**Why it failed:** SiteGround aggressively caches GET responses. The status endpoint returned cached 200 OK even though the plugin was actually inactive. False positive every time.
+
+#### 2. POST to `?rest_route=` query parameter format
+**Why it failed:** SiteGround blocks POST requests to `?rest_route=` for custom plugin routes. WordPress core routes (like `/wp/v2/posts`) work with POST + `?rest_route=`, but custom plugin routes return `rest_no_route` 404.
+
+#### 3. POST to `/wp-json/` pretty permalink format
+**Why it failed:** After a restore replaces the DB, WordPress rewrite rules (`.htaccess`) are lost/broken. `/wp-json/` returns SiteGround's generic 404 page (not even a WordPress REST API response).
+
+#### 4. GET to `?rest_route=` with `WP_REST_Server::ALLMETHODS` route registration
+**Why it failed:** Even though routes were registered to accept all HTTP methods, the plugin itself was not loaded at all after the restore. No routes = no method matching possible.
+
+#### 5. mu-plugin (`ensure-migrator-active.php`) to keep plugin active
+**Why it failed:** The mu-plugin was created during import, but after the DB replacement, WordPress still silently deactivated the plugin on the next request. The mu-plugin's `include_once` + `update_option` approach couldn't reliably prevent this.
+
+#### 6. `flush_rewrite_rules()` fix for root domains
+**Why it failed on its own:** Even with rewrite rules flushed during import, the plugin being inactive on the next request meant routes weren't registered regardless of whether `/wp-json/` resolved correctly.
+
+#### 7. `_post_rest_api` helper with 3-tier fallback (POST `/wp-json/` → POST `?rest_route=` → GET `?rest_route=`)
+**Why it failed:** All three methods fail when the plugin is completely inactive. The routes simply don't exist.
+
+### What WORKS and Why
+
+#### Always use browser automation for target setup before every restore
+- **Implementation:** Removed the REST API fast-path entirely from the restore endpoint in `main.py`. Every restore now runs browser automation (Playwright/Camoufox) on the target site.
+- **Why it works:** Browser automation logs into wp-admin, uploads a fresh copy of the plugin zip, activates it, sets the API key, and enables import. This **guarantees** the plugin is active and the REST API endpoints are available for the actual import call.
+- **Trade-off:** Each restore takes ~1 minute longer due to browser automation, but it's 100% reliable.
+- **The key insight:** On SiteGround, you cannot rely on the plugin surviving a DB replacement. The only reliable way to ensure the plugin is active is to re-upload and activate it via the WordPress admin UI before every restore.
+
+### Key Files Changed
+- `wp-setup-service/app/main.py` — Removed REST API fast-path, always uses browser automation for target
+- `wp-setup-service/app/main.py` — `_post_rest_api()` helper with fallback chain (still useful for non-SiteGround targets)
+- `wordpress-target-image/plugin/includes/class-api.php` — Routes registered with `WP_REST_Server::ALLMETHODS`
+- `wordpress-target-image/plugin/includes/class-importer.php` — mu-plugin creation, rewrite flush fix for root domains
+- `wp-setup-service/app/browser_setup.py` — Dynamic `admin_base` extraction to handle double-slash URLs
+
+### Confirmed Working Workflow
+```
+Clone ✓ → 1st Restore ✓ → 2nd Restore ✓ → Nth Restore ✓
+(browser automation re-activates plugin each time)
+```
+
+---
+
+## HTTPS Migration for Clone URLs (2026-02-07)
+
+### What Was Done
+1. **ACM Certificate**: Requested free cert for `clones.betaweb.ai` (auto-renewing)
+   - ARN: `arn:aws:acm:us-east-1:044514005641:certificate/c3fb5ab3-160f-4db2-ac4b-056fe7166558`
+2. **SiteGround DNS**: Added two CNAME records:
+   - `clones.betaweb.ai` → `wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com`
+   - ACM DNS validation CNAME record
+3. **ALB Security Group**: Opened port 443 inbound (`sg-0ec42580671190c22`)
+4. **HTTPS Listener**: Created on ALB port 443 with ACM cert
+   - ARN: `arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/f6542ccc3f16bfd7`
+5. **HTTP→HTTPS Redirect**: Port 80 listener now returns 301 redirect to HTTPS
+6. **Code Changes** (`ec2_provisioner.py`):
+   - `self.alb_dns` → `clones.betaweb.ai`
+   - `self.alb_listener_arn` → HTTPS listener ARN (new clone ALB rules attach to 443 listener)
+   - `alb_url` → `https://` prefix
+   - Nginx `X-Forwarded-Proto` → `$http_x_forwarded_proto` (pass through ALB header instead of `$scheme`)
+7. **Terraform** (`main.tf`): Added HTTPS listener, ACM cert data source, port 443 SG ingress, HTTP redirect
+
+### Result
+- Clone URLs: `https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/`
+- HTTP automatically redirects to HTTPS
+- Branch: `feat/clonehttps`
 
 ## Commands Used
 
@@ -265,9 +349,10 @@ sudo docker exec CONTAINER_NAME tail -20 /var/log/apache2/error.log
 - **Service**: wp-setup-service:latest (FastAPI)
 - **WordPress Image**: wordpress-target-sqlite:latest
   - Latest SHA: `sha256:1d0a35138189a85d43b604f72b104ef2f0a0dd0d07db3ded5d397cb3fe68d3bc`
-- **Database**: SQLite (per-container, no shared MySQL)
+- **Database**: MySQL (per-EC2 MySQL container, one DB per clone)
 - **Loki Logging**: Enabled on management server
 - **Terraform State**: Managed separately in infra/wp-targets/
+- **MySQL Root Password**: Set via `MYSQL_ROOT_PASSWORD` env var (Terraform output)
 
 ## Connection Details
 - **Management Server**: ec2-user@13.222.20.138
@@ -289,9 +374,9 @@ sudo docker exec CONTAINER_NAME tail -20 /var/log/apache2/error.log
 - ✅ **.gitignore**: Added AGENTS.md, QODER.md, .qoder/, openspec/
 
 ## Git Repository
-- **Branch**: feat/restore
+- **Active Branch**: feat/clonehttps (HTTPS migration)
+- **Previous Branch**: feat/restore (restore fixes)
 - **Remote**: https://github.com/t0ct0c/clone-restore.git
-- **Last Push**: 2026-01-24 (8 commits ahead of main)
 - **Untracked**: .windsurf/ (IDE folder, not committed)
 
 ---
@@ -323,7 +408,7 @@ curl -X POST http://13.222.20.138:8000/clone \
 ```json
 {
   "success": true,
-  "clone_url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS",
+  "clone_url": "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS",
   "wordpress_username": "admin",
   "wordpress_password": "generated-password",
   "api_key": "migration-master-key",
@@ -335,11 +420,11 @@ curl -X POST http://13.222.20.138:8000/clone \
 **Verify Clone Access**:
 ```bash
 # Test clone homepage (should return 200 OK with HTML)
-curl -I "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/"
+curl -I "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/"
 
 # Test clone REST API export endpoint (should return 200 OK with JSON)
 curl -X POST \
-  "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export" \
+  "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export" \
   -H "X-Migrator-Key: migration-master-key" | python3 -m json.tool
 ```
 
@@ -358,7 +443,7 @@ curl -X POST http://13.222.20.138:8000/restore \
   -H "Content-Type: application/json" \
   -d '{
     "source": {
-      "url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS",
+      "url": "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS",
       "username": "admin",
       "password": "clone-password-from-step1"
     },
@@ -405,7 +490,7 @@ curl -X POST http://13.222.20.138:8000/restore \
   -H "Content-Type: application/json" \
   -d '{
     "source": {
-      "url": "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS",
+      "url": "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS",
       "username": "admin",
       "password": "clone-password"
     },
@@ -431,7 +516,7 @@ curl -X POST http://13.222.20.138:8000/restore \
 ```bash
 # List ALB listener rules
 aws elbv2 describe-rules \
-  --listener-arn arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/e906e470d368d461 \
+  --listener-arn arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/f6542ccc3f16bfd7 \
   --region us-east-1 \
   --query 'Rules[?Priority!=`default`].[Priority,Conditions[0].Values[0],Actions[0].TargetGroupArn]' \
   --output table
@@ -494,14 +579,14 @@ ssh -i wp-targets-key.pem ec2-user@13.222.20.138 "docker logs wp-setup-service -
 
 ```bash
 # Verify clone is accessible
-curl -I "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/" | head -1
+curl -I "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/" | head -1
 
 # Test REST API export
-curl -X POST "http://wp-targets-alb-1392351630.us-east-1.elb.amazonaws.com/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export" \
+curl -X POST "https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/index.php?rest_route=/custom-migrator/v1/export" \
   -H "X-Migrator-Key: migration-master-key" -w "\nHTTP: %{http_code}\n"
 
-# Check ALB rules count
-aws elbv2 describe-rules --listener-arn arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/e906e470d368d461 --region us-east-1 --query 'length(Rules[?Priority!=`default`])'
+# Check ALB rules count (HTTPS listener)
+aws elbv2 describe-rules --listener-arn arn:aws:elasticloadbalancing:us-east-1:044514005641:listener/app/wp-targets-alb/9deaa3f04bc5506b/f6542ccc3f16bfd7 --region us-east-1 --query 'length(Rules[?Priority!=`default`])'
 
 # List all active clones
 aws elbv2 describe-target-groups --region us-east-1 --query 'TargetGroups[?starts_with(TargetGroupName, `clone-`)].TargetGroupName' --output table

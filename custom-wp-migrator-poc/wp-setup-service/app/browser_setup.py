@@ -161,6 +161,15 @@ async def setup_wordpress_with_browser(
 
                 l.info("Successfully reached admin area")
 
+                # Extract admin base from actual browser URL to handle double-slash
+                # (e.g. betaweb.ai//wp-admin/ when siteurl has trailing slash)
+                current_admin_url = page.url
+                if "/wp-admin" in current_admin_url:
+                    admin_base = current_admin_url.split("/wp-admin")[0]
+                else:
+                    admin_base = url
+                l.info(f"Using admin base: {admin_base}")
+
                 # Step 2: Check if plugin is already active by trying settings page first
                 # SiteGround's SG Security forces reauth on plugins.php, so we avoid it
                 # Instead: check settings page → if plugin active, get key → done
@@ -170,7 +179,7 @@ async def setup_wordpress_with_browser(
                 plugin_already_active = False
 
                 await page.goto(
-                    f"{url}/wp-admin/options-general.php?page=custom-migrator-settings",
+                    f"{admin_base}/wp-admin/options-general.php?page=custom-migrator-settings",
                     wait_until="networkidle",
                     timeout=60000,
                 )
@@ -245,7 +254,7 @@ async def setup_wordpress_with_browser(
                 for plugins_attempt in range(3):
                     try:
                         await page.goto(
-                            f"{url}/wp-admin/plugin-install.php?tab=upload",
+                            f"{admin_base}/wp-admin/plugin-install.php?tab=upload",
                             wait_until="networkidle",
                             timeout=60000,
                         )
@@ -443,7 +452,7 @@ async def setup_wordpress_with_browser(
                 # Step 4: Get API key from plugin settings
                 l.info("Step 4: Navigating to plugin settings to retrieve API key")
                 await page.goto(
-                    f"{url}/wp-admin/options-general.php?page=custom-migrator-settings",
+                    f"{admin_base}/wp-admin/options-general.php?page=custom-migrator-settings",
                     wait_until="networkidle",
                     timeout=60000,
                 )
@@ -496,7 +505,7 @@ async def setup_wordpress_with_browser(
                 l.info("Step 4.5: Verifying REST API endpoints are registered")
                 # Navigate to a page to trigger plugins_loaded hook
                 await page.goto(
-                    f"{url}/wp-admin/", wait_until="networkidle", timeout=30000
+                    f"{admin_base}/wp-admin/", wait_until="networkidle", timeout=30000
                 )
                 l.info("Triggered plugins_loaded by loading wp-admin dashboard")
 
@@ -505,7 +514,7 @@ async def setup_wordpress_with_browser(
                     l.info("Enabling import on target")
                     # Navigate back to settings page to ensure we're on the right page
                     await page.goto(
-                        f"{url}/wp-admin/options-general.php?page=custom-migrator-settings",
+                        f"{admin_base}/wp-admin/options-general.php?page=custom-migrator-settings",
                         wait_until="networkidle",
                         timeout=60000,
                     )
