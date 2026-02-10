@@ -32,7 +32,7 @@ from .browser_setup import setup_target_with_browser, setup_wordpress_with_brows
 
 def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
     """Build a WordPress REST API URL.
-    
+
     For GET: always use ?rest_route= (works regardless of permalink settings).
     For POST: use /wp-json/ (SiteGround blocks POST to ?rest_route=).
     For clone URLs (contain /clone-): always use ?rest_route= (plain permalinks).
@@ -45,10 +45,11 @@ def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
         return f"{base}/wp-json{route}"
 
 
-def _post_rest_api(base_url: str, route: str, headers: dict, timeout: int,
-                   json_data: dict = None) -> requests.Response:
+def _post_rest_api(
+    base_url: str, route: str, headers: dict, timeout: int, json_data: dict = None
+) -> requests.Response:
     """POST to a WordPress REST API endpoint with automatic fallback.
-    
+
     Tries in order:
     1. POST /wp-json/ (standard, works when rewrite rules are intact)
     2. POST ?rest_route= (works on clones with plain permalinks)
@@ -57,21 +58,25 @@ def _post_rest_api(base_url: str, route: str, headers: dict, timeout: int,
     """
     base = base_url.rstrip("/")
     primary_url = _rest_url(base, route, "POST")
-    
+
     resp = requests.post(primary_url, headers=headers, json=json_data, timeout=timeout)
-    
+
     # If primary failed with 404 and we used /wp-json/, try POST ?rest_route=
     if resp.status_code == 404 and "/wp-json/" in primary_url:
         fallback_url = f"{base}/?rest_route={route}"
-        logger.info(f"POST to {primary_url} got 404, trying POST fallback: {fallback_url}")
-        resp = requests.post(fallback_url, headers=headers, json=json_data, timeout=timeout)
-    
+        logger.info(
+            f"POST to {primary_url} got 404, trying POST fallback: {fallback_url}"
+        )
+        resp = requests.post(
+            fallback_url, headers=headers, json=json_data, timeout=timeout
+        )
+
     # If POST ?rest_route= also failed with 404, try GET ?rest_route= (SiteGround workaround)
     if resp.status_code == 404:
         get_url = f"{base}/?rest_route={route}"
         logger.info(f"POST failed with 404, trying GET fallback: {get_url}")
         resp = requests.get(get_url, headers=headers, json=json_data, timeout=timeout)
-    
+
     return resp
 
 
@@ -207,6 +212,21 @@ class RestoreResponse(BaseModel):
     target_api_key: Optional[str] = None
     integrity: Optional[Dict] = None
     options: Optional[Dict] = None
+
+
+class CreateAppPasswordRequest(BaseModel):
+    url: HttpUrl
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    app_name: Optional[str] = Field("WP Migrator", min_length=1, max_length=100)
+
+
+class CreateAppPasswordResponse(BaseModel):
+    success: bool
+    application_password: Optional[str] = None
+    app_name: Optional[str] = None
+    message: str
+    error_code: Optional[str] = None
 
 
 # Helper Functions
@@ -483,7 +503,8 @@ def perform_clone(
         # Step 1: Export from source
         logger.info("Exporting from source...")
         export_response = _post_rest_api(
-            source_url, "/custom-migrator/v1/export",
+            source_url,
+            "/custom-migrator/v1/export",
             headers={"X-Migrator-Key": source_api_key},
             timeout=TIMEOUT,
         )
@@ -518,7 +539,8 @@ def perform_clone(
             import_payload["admin_password"] = admin_password
 
         import_response = _post_rest_api(
-            target_url, "/custom-migrator/v1/import",
+            target_url,
+            "/custom-migrator/v1/import",
             headers={
                 "X-Migrator-Key": target_api_key,
                 "Content-Type": "application/json",
@@ -584,7 +606,8 @@ def perform_restore(
         logger.info("Exporting from source...")
 
         export_response = _post_rest_api(
-            source_url, "/custom-migrator/v1/export",
+            source_url,
+            "/custom-migrator/v1/export",
             headers={"X-Migrator-Key": source_api_key},
             timeout=TIMEOUT,
         )
@@ -630,7 +653,8 @@ def perform_restore(
             import_payload["admin_password"] = admin_password
 
         import_response = _post_rest_api(
-            target_url, "/custom-migrator/v1/import",
+            target_url,
+            "/custom-migrator/v1/import",
             headers={
                 "X-Migrator-Key": target_api_key,
                 "Content-Type": "application/json",
@@ -873,13 +897,13 @@ async def clone_endpoint(request: CloneRequest):
         # Set API key to migration-master-key so restore endpoint can use a known key
         logger.info("Setting clone API key to migration-master-key...")
         provisioner.run_wp_cli_in_container(
-            instance_ip, customer_id,
-            "option update custom_migrator_api_key migration-master-key"
+            instance_ip,
+            customer_id,
+            "option update custom_migrator_api_key migration-master-key",
         )
         # Also enable import on the clone
         provisioner.run_wp_cli_in_container(
-            instance_ip, customer_id,
-            "option update custom_migrator_allow_import 1"
+            instance_ip, customer_id, "option update custom_migrator_allow_import 1"
         )
 
     # Reload Apache in auto-provisioned containers to reset database connections
@@ -943,9 +967,7 @@ async def restore_endpoint(request: RestoreRequest):
 
         # Pre-check: verify clone is healthy and find working API key
         logger.info("Verifying clone source is healthy...")
-        health_url = (
-            f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status"
-        )
+        health_url = f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status"
 
         for candidate_key in candidate_keys:
             try:
@@ -957,7 +979,9 @@ async def restore_endpoint(request: RestoreRequest):
                     logger.info(f"Clone API key found: {candidate_key[:10]}...")
                     break
                 elif health_resp.status_code == 403:
-                    logger.info(f"Key '{candidate_key[:10]}...' rejected (403), trying next...")
+                    logger.info(
+                        f"Key '{candidate_key[:10]}...' rejected (403), trying next..."
+                    )
                 else:
                     resp_text = health_resp.text
                     if "Error establishing a database connection" in resp_text:
@@ -982,9 +1006,14 @@ async def restore_endpoint(request: RestoreRequest):
         if source_api_key is None:
             # None of the candidate keys worked - fall back to browser automation
             # to retrieve the actual API key from the clone's settings page
-            logger.info("No candidate key worked for clone, falling back to browser automation...")
+            logger.info(
+                "No candidate key worked for clone, falling back to browser automation..."
+            )
             source_result = await setup_wordpress_with_browser(
-                source_url, request.source.username, request.source.password, role="source"
+                source_url,
+                request.source.username,
+                request.source.password,
+                role="source",
             )
             if not source_result.get("success"):
                 raise HTTPException(
