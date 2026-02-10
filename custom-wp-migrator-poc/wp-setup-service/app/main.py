@@ -27,7 +27,10 @@ from .wp_auth import WordPressAuthenticator
 from .wp_plugin import WordPressPluginInstaller
 from .wp_options import WordPressOptionsFetcher
 from .ec2_provisioner import EC2Provisioner
-from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser
+from .browser_setup import (
+    setup_target_with_browser,
+    setup_wordpress_with_browser,
+)
 
 
 def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
@@ -1108,3 +1111,28 @@ async def provision_endpoint(request: ProvisionRequest):
         )
 
     return ProvisionResponse(**result)
+
+
+@app.post("/create-app-password", response_model=CreateAppPasswordResponse)
+async def create_app_password_endpoint(request: CreateAppPasswordRequest):
+    """
+    Create WordPress Application Password via browser automation.
+
+    This standalone utility endpoint generates an Application Password for
+    a WordPress site, enabling REST API authentication without manual
+    wp-admin access.
+
+    Requirements:
+    - WordPress 5.6+ (Application Passwords feature)
+    - User must have permission to create application passwords
+    - Application passwords must be enabled on the site
+
+    Returns the generated password that can be used for REST API authentication.
+    """
+    # For now, return a placeholder response since the full implementation
+    # requires the create_application_password function from browser_setup.py
+    # which doesn't exist in this branch yet.
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail="Application password feature not yet implemented in this branch. Please use main branch or add the create_application_password function to browser_setup.py",
+    )
