@@ -550,7 +550,7 @@ location {path_prefix}/ {{
             sudo systemctl reload nginx
 
             # Delete ALB listener rule and target group
-            LISTENER_ARN="{self.listener_arn}"
+            LISTENER_ARN="{self.alb_listener_arn}"
             REGION="us-east-1"
 
             # Find and delete the ALB listener rule for this clone
