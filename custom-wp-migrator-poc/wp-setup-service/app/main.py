@@ -27,7 +27,7 @@ from .wp_auth import WordPressAuthenticator
 from .wp_plugin import WordPressPluginInstaller
 from .wp_options import WordPressOptionsFetcher
 from .ec2_provisioner import EC2Provisioner
-from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser
+from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser, create_application_password
 
 
 def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
@@ -207,6 +207,21 @@ class RestoreResponse(BaseModel):
     target_api_key: Optional[str] = None
     integrity: Optional[Dict] = None
     options: Optional[Dict] = None
+
+
+class CreateAppPasswordRequest(BaseModel):
+    url: HttpUrl
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    app_name: Optional[str] = Field("WP Migrator", min_length=1, max_length=100)
+
+
+class CreateAppPasswordResponse(BaseModel):
+    success: bool
+    application_password: Optional[str] = None
+    app_name: Optional[str] = None
+    message: str
+    error_code: Optional[str] = None
 
 
 # Helper Functions
@@ -1079,3 +1094,71 @@ async def provision_endpoint(request: ProvisionRequest):
         )
 
     return ProvisionResponse(**result)
+
+
+@app.post("/create-app-password", response_model=CreateAppPasswordResponse)
+async def create_app_password_endpoint(request: CreateAppPasswordRequest):
+    """
+    Create WordPress Application Password via browser automation.
+
+    This standalone utility endpoint generates an Application Password for
+    a WordPress site, enabling REST API authentication without manual
+    wp-admin access.
+
+    Requirements:
+    - WordPress 5.6+ (Application Passwords feature)
+    - User must have permission to create application passwords
+    - Application passwords must be enabled on the site
+
+    Returns the generated password that can be used for REST API authentication.
+    """
+    logger.info("🔐 ========================================")
+    logger.info("🔐 [CREATE-APP-PASSWORD] Request received")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] URL: {request.url}")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] Username: {request.username}")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] App name: {request.app_name}")
+    logger.info("🔐 ========================================")
+
+    result = await create_application_password(
+        str(request.url), request.username, request.password, request.app_name
+    )
+
+    if not result.get("success"):
+        # Map error codes to appropriate HTTP status codes
+        error_code = result.get("error_code", "UNKNOWN_ERROR")
+        logger.error(
+            f"🔐 [CREATE-APP-PASSWORD] ❌ FAILED with error code: {error_code}"
+        )
+        logger.error(
+            f"🔐 [CREATE-APP-PASSWORD] ❌ Error message: {result.get('message')}"
+        )
+
+        status_code = {
+            "LOGIN_FAILED": status.HTTP_401_UNAUTHORIZED,
+            "LOGIN_ERROR": status.HTTP_401_UNAUTHORIZED,
+            "SESSION_LOST": status.HTTP_401_UNAUTHORIZED,
+            "APP_PASSWORD_NOT_SUPPORTED": status.HTTP_400_BAD_REQUEST,
+            "APP_PASSWORD_DISABLED": status.HTTP_400_BAD_REQUEST,
+            "PERMISSION_DENIED": status.HTTP_403_FORBIDDEN,
+            "BROWSER_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
+        }.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ HTTP Status: {status_code}")
+        logger.info("🔐 ========================================")
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=result.get("message", "Application password creation failed"),
+        )
+
+    logger.info("🔐 [CREATE-APP-PASSWORD] ✅ SUCCESS")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ App name: {result.get('app_name')}")
+    password_preview = (
+        result.get("application_password", "")[:8] + "..."
+        if result.get("application_password")
+        else "N/A"
+    )
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ Password: {password_preview}")
+    logger.info("🔐 ========================================")
+
+    return CreateAppPasswordResponse(**result)
