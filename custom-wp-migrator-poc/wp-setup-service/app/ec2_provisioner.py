@@ -532,7 +532,7 @@ location {path_prefix}/ {{
             
             # Sanitize customer_id for database name
             db_name = f"wp_{customer_id.replace('-', '_')}"
-            
+
             # Schedule one-time cleanup including database drop
             # Escape MySQL password for shell using single quotes
             escaped_password = self.mysql_root_password.replace("'", "'\\''")
@@ -541,13 +541,50 @@ location {path_prefix}/ {{
             # Stop and remove container
             docker stop {customer_id}
             docker rm {customer_id}
-            
+
             # Drop MySQL database and user
             docker exec mysql mysql -uroot -p'{escaped_password}' -e "DROP DATABASE IF EXISTS {db_name}; DROP USER IF EXISTS '{db_name}'@'%';"
-            
+
             # Remove Nginx config
             sudo rm -f /etc/nginx/default.d/{customer_id}.conf
             sudo systemctl reload nginx
+
+            # Delete ALB listener rule and target group
+            LISTENER_ARN="{self.listener_arn}"
+            REGION="us-east-1"
+
+            # Find and delete the ALB listener rule for this clone
+            RULE_ARN=$(aws elbv2 describe-rules --region $REGION --listener-arn "$LISTENER_ARN" --output json | python3 -c "
+import json, sys
+rules = json.load(sys.stdin)['Rules']
+for rule in rules:
+    for cond in rule.get('Conditions', []):
+        for val in cond.get('Values', []):
+            if '{path_prefix}' in val:
+                print(rule['RuleArn'])
+                break
+" 2>/dev/null)
+
+            if [ -n "$RULE_ARN" ]; then
+                # Get target group ARN before deleting rule
+                TG_ARN=$(aws elbv2 describe-rules --region $REGION --rule-arns "$RULE_ARN" --output json | python3 -c "
+import json, sys
+try:
+    rule = json.load(sys.stdin)['Rules'][0]
+    for action in rule.get('Actions', []):
+        if action.get('Type') == 'forward':
+            print(action.get('TargetGroupArn', ''))
+except: pass
+" 2>/dev/null)
+
+                # Delete ALB listener rule
+                aws elbv2 delete-rule --region $REGION --rule-arn "$RULE_ARN" 2>/dev/null
+
+                # Delete target group if it exists
+                if [ -n "$TG_ARN" ]; then
+                    aws elbv2 delete-target-group --region $REGION --target-group-arn "$TG_ARN" 2>/dev/null
+                fi
+            fi
             """
             
             commands = f"""
