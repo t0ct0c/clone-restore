@@ -753,6 +753,69 @@ async def setup_endpoint(request: SetupRequest):
     return SetupResponse(**result)
 
 
+@app.post("/create-app-password", response_model=CreateAppPasswordResponse)
+async def create_app_password_endpoint(request: CreateAppPasswordRequest):
+    """
+    Create WordPress Application Password via browser automation.
+    
+    This standalone utility endpoint generates an Application Password for
+    a WordPress site, enabling REST API authentication without manual
+    wp-admin access.
+    
+    Requirements:
+    - WordPress 5.6+ (Application Passwords feature)
+    - User must have permission to create application passwords
+    - Application passwords must be enabled on the site
+    
+    Returns the generated password that can be used for REST API authentication.
+    """
+    logger.info("🔐 ========================================")
+    logger.info("🔐 [CREATE-APP-PASSWORD] Request received")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] URL: {request.url}")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] Username: {request.username}")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] App name: {request.app_name}")
+    logger.info("🔐 ========================================")
+    
+    result = await create_application_password(
+        str(request.url),
+        request.username,
+        request.password,
+        request.app_name
+    )
+    
+    if not result.get('success'):
+        # Map error codes to appropriate HTTP status codes
+        error_code = result.get('error_code', 'UNKNOWN_ERROR')
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ FAILED with error code: {error_code}")
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ Error message: {result.get('message')}")
+        
+        status_code = {
+            'LOGIN_FAILED': status.HTTP_401_UNAUTHORIZED,
+            'LOGIN_ERROR': status.HTTP_401_UNAUTHORIZED,
+            'SESSION_LOST': status.HTTP_401_UNAUTHORIZED,
+            'APP_PASSWORD_NOT_SUPPORTED': status.HTTP_400_BAD_REQUEST,
+            'APP_PASSWORD_DISABLED': status.HTTP_400_BAD_REQUEST,
+            'PERMISSION_DENIED': status.HTTP_403_FORBIDDEN,
+            'BROWSER_TIMEOUT': status.HTTP_504_GATEWAY_TIMEOUT,
+        }.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ HTTP Status: {status_code}")
+        logger.info("🔐 ========================================")
+        
+        raise HTTPException(
+            status_code=status_code,
+            detail=result.get('message', 'Application password creation failed')
+        )
+    
+    logger.info("🔐 [CREATE-APP-PASSWORD] ✅ SUCCESS")
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ App name: {result.get('app_name')}")
+    password_preview = result.get('application_password', '')[:8] + '...' if result.get('application_password') else 'N/A'
+    logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ Password: {password_preview}")
+    logger.info("🔐 ========================================")
+    
+    return CreateAppPasswordResponse(**result)
+
+
 @app.post("/clone", response_model=CloneResponse)
 async def clone_endpoint(request: CloneRequest):
     """
@@ -761,12 +824,21 @@ async def clone_endpoint(request: CloneRequest):
     If target is not provided and auto_provision is True, an ephemeral EC2 target
     will be automatically provisioned.
     """
+    logger.info("📋 ========================================")
+    logger.info("📋 [CLONE-START] Clone request received")
+    logger.info(f"📋 [CLONE-START] Source: {request.source.url}")
+    logger.info(f"📋 [CLONE-START] Auto-provision: {request.auto_provision}")
+    if request.target:
+        logger.info(f"📋 [CLONE-START] Target: {request.target.url}")
+    logger.info("📋 ========================================")
+    
     provisioned_target_info = None
     target_url = None
     target_username = None
     target_password = None
 
     # Setup source - Use browser-based setup for better compatibility with bot protection
+    logger.info("📋 [CLONE-SOURCE-SETUP] Setting up source WordPress")
     source_result = await setup_wordpress_with_browser(
         str(request.source.url),
         request.source.username,
@@ -783,13 +855,14 @@ async def clone_endpoint(request: CloneRequest):
     # Determine target: use provided or auto-provision
     if request.target is None:
         if not request.auto_provision:
+            logger.error("📋 [CLONE-TARGET-SETUP] ❌ No target provided and auto_provision disabled")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Target credentials required when auto_provision is False",
             )
 
         # Auto-provision EC2 target
-        logger.info("Auto-provisioning EC2 target...")
+        logger.info("📋 [CLONE-TARGET-PROVISION] Auto-provisioning EC2 target...")
         provisioner = EC2Provisioner()
 
         # Generate unique customer_id from timestamp
@@ -840,13 +913,13 @@ async def clone_endpoint(request: CloneRequest):
                 "message": "Direct setup successful",
             }
         else:
-            logger.info("Direct API key missing, falling back to browser-based setup")
+            logger.info("📋 [CLONE-TARGET-SETUP] Direct API key missing, using browser setup")
             target_result = await setup_target_with_browser(
                 target_url, target_username, target_password
             )
     else:
         # User-provided target - use HTTP-based setup
-        logger.info("Using HTTP-based setup for user-provided target")
+        logger.info("📋 [CLONE-TARGET-SETUP] Using HTTP-based setup for user-provided target")
         target_result = await setup_wordpress(
             target_url, target_username, target_password, role="target"
         )
@@ -858,6 +931,10 @@ async def clone_endpoint(request: CloneRequest):
         )
 
     # Perform clone
+    logger.info("📋 [CLONE-EXECUTE] Starting clone operation")
+    logger.info(f"📋 [CLONE-EXECUTE] Source URL: {request.source.url}")
+    logger.info(f"📋 [CLONE-EXECUTE] Target URL: {target_url}")
+    
     clone_result = perform_clone(
         str(request.source.url),
         source_result["api_key"],
@@ -911,7 +988,7 @@ async def clone_endpoint(request: CloneRequest):
 
         # Force-update WordPress URLs after Apache reload
         # WordPress auto-detects Host header and may revert URLs to localhost
-        logger.info("Force-updating WordPress URLs to prevent auto-correction...")
+        logger.info("📋 [CLONE-FINALIZE] Force-updating WordPress URLs")
         provisioner.update_wordpress_urls(
             provisioned_target_info["instance_ip"],
             provisioned_target_info["customer_id"],
@@ -1042,6 +1119,12 @@ async def restore_endpoint(request: RestoreRequest):
         )
 
     # Perform restore with preservation options
+    logger.info("🔄 [RESTORE-EXECUTE] Starting restore operation")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Source URL: {source_url}")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Target URL: {request.target.url}")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Preserve plugins: {request.preserve_plugins}")
+    logger.info(f"🔄 [RESTORE-EXECUTE] Preserve themes: {request.preserve_themes}")
+    
     restore_result = perform_restore(
         source_url,
         source_api_key,

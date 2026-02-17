@@ -5,6 +5,7 @@ Browser-based WordPress setup using Playwright for target instances
 from loguru import logger
 import os
 import asyncio
+import time
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from camoufox.async_api import AsyncCamoufox
 from typing import Optional
@@ -53,7 +54,14 @@ async def setup_wordpress_with_browser(
         url = url.rstrip("/")
 
         try:
-            async with AsyncCamoufox(headless=True) as browser:
+            # Enhanced anti-detection configuration to bypass security plugins
+            async with AsyncCamoufox(
+                headless=True,
+                humanize=True,  # Add human-like cursor movement and typing delays
+                geoip=True,  # Use real geolocation data (requires ~1.3GB font cache)
+                os=['windows', 'macos'],  # Randomly choose OS for fingerprint
+                locale='en-US'
+            ) as browser:
                 # Create a context with realistic fingerprints
                 context = await browser.new_context(
                     viewport={"width": 1280, "height": 800}, accept_downloads=True

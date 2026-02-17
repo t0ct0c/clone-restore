@@ -26,9 +26,13 @@ add_action('plugins_loaded', 'custom_migrator_init');
 function custom_migrator_init() {
     // Initialize API endpoints
     Custom_Migrator_API::init();
-    
+
     // Initialize settings
     Custom_Migrator_Settings::init();
+
+    // Enable Application Passwords over HTTP for development/testing
+    // This is required when WordPress is running without HTTPS
+    add_filter('wp_is_application_passwords_available', '__return_true');
 }
 
 // Activation hook

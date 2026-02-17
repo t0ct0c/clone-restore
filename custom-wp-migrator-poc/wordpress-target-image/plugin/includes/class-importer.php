@@ -197,6 +197,9 @@ class Custom_Migrator_Importer {
             } else {
                 $this->log("WP-CLI search-replace completed successfully.");
             }
+            
+            // CRITICAL: Verify URLs were actually replaced
+            $this->verify_url_replacement($new_url, $old_url);
         }
         
         // Regenerate Elementor CSS if it exists (CRITICAL for design)
@@ -261,6 +264,60 @@ class Custom_Migrator_Importer {
             $new_url
         ));
         $this->log("Explicitly set siteurl and home to: $new_url");
+    }
+    
+    private function verify_url_replacement($expected_url, $old_url) {
+        global $wpdb;
+        $prefix = $wpdb->prefix;
+        
+        $this->log("Verifying URL replacement...");
+        
+        // Check siteurl
+        $siteurl = $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM `{$prefix}options` WHERE option_name = %s",
+            'siteurl'
+        ));
+        
+        // Check home
+        $home = $wpdb->get_var($wpdb->prepare(
+            "SELECT option_value FROM `{$prefix}options` WHERE option_name = %s",
+            'home'
+        ));
+        
+        $siteurl_trimmed = rtrim($siteurl, '/');
+        $home_trimmed = rtrim($home, '/');
+        $expected_trimmed = rtrim($expected_url, '/');
+        
+        $this->log("Expected URL: $expected_trimmed");
+        $this->log("Current siteurl: $siteurl_trimmed");
+        $this->log("Current home: $home_trimmed");
+        
+        // Check if URLs still contain the old URL (catastrophic failure)
+        if (strpos($siteurl_trimmed, $old_url) !== false || strpos($home_trimmed, $old_url) !== false) {
+            $error_msg = "CRITICAL: URL replacement failed! Database still contains old URL ($old_url). siteurl=$siteurl_trimmed, home=$home_trimmed";
+            $this->log("ERROR: $error_msg");
+            throw new Exception($error_msg);
+        }
+        
+        // Check if URLs match expected (warning, not fatal)
+        if ($siteurl_trimmed !== $expected_trimmed || $home_trimmed !== $expected_trimmed) {
+            $this->log("WARNING: URLs don't match expected value. This may cause redirect issues.");
+            $this->log("Attempting to force-fix URLs...");
+            
+            // Force update to correct values
+            $wpdb->query($wpdb->prepare(
+                "UPDATE `{$prefix}options` SET `option_value` = %s WHERE `option_name` = 'siteurl'",
+                $expected_url
+            ));
+            $wpdb->query($wpdb->prepare(
+                "UPDATE `{$prefix}options` SET `option_value` = %s WHERE `option_name` = 'home'",
+                $expected_url
+            ));
+            
+            $this->log("Force-updated siteurl and home to: $expected_url");
+        } else {
+            $this->log("✓ URL verification passed. siteurl and home are correct.");
+        }
     }
     
     private function drop_all_tables() {
@@ -838,6 +895,27 @@ MUPLUGIN;
             $this->log("Disabled $removed_count SiteGround plugin(s) to prevent redirect loops");
         } else {
             $this->log('No SiteGround plugins found to disable');
+        }
+    }
+    
+    private function ensure_custom_migrator_active() {
+        // Critical: Ensure custom-migrator plugin is active after restore
+        // Source database may have it inactive, causing corruption on target
+        $plugin_path = 'custom-migrator/custom-migrator.php';
+        
+        // Get current active plugins
+        $active_plugins = get_option('active_plugins', array());
+        
+        // Check if custom-migrator is already active
+        if (!in_array($plugin_path, $active_plugins)) {
+            // Add to active plugins list
+            $active_plugins[] = $plugin_path;
+            $active_plugins = array_values($active_plugins); // Re-index array
+            
+            update_option('active_plugins', $active_plugins);
+            $this->log('CRITICAL: Activated custom-migrator plugin to prevent corruption');
+        } else {
+            $this->log('Custom-migrator plugin already active');
         }
     }
 

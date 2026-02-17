@@ -72,5 +72,4 @@ QODER.mod
 QODER.md
 AGENTS.md
 .qoder/
-openspec/
-.windsurf/
+.windsurf/.continue/
