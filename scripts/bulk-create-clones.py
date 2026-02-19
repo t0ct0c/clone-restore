@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
 Bulk Clone Creator - Creates 20 WordPress clones for load testing
-
-Usage: python3 bulk-create-clones.py
-
-Requirements:
-  pip install requests
+Outputs: Clone URLs and creation times only
 """
 
 import requests
@@ -13,18 +9,16 @@ import json
 import time
 from datetime import datetime
 
-# Configuration
 API_BASE = "https://clones.betaweb.ai/api"
 SOURCE_URL = "https://betaweb.ai"
 SOURCE_USERNAME = "Charles@toctoc.com.au"
 SOURCE_PASSWORD = "6(4b`Nde1i_D"
 CLONE_COUNT = 20
-TTL_MINUTES = 60  # 1 hour TTL
+TTL_MINUTES = 60
 
 def create_clone(clone_id: str) -> dict:
     """Create a single WordPress clone"""
     url = f"{API_BASE}/clone"
-    
     payload = {
         "source": {
             "url": SOURCE_URL,
@@ -35,13 +29,19 @@ def create_clone(clone_id: str) -> dict:
         "ttl_minutes": TTL_MINUTES
     }
     
+    start_time = time.time()
     try:
         response = requests.post(url, json=payload, timeout=30)
+        elapsed = time.time() - start_time
         response.raise_for_status()
+        data = response.json() if response.text.startswith('{') else {"raw": response.text}
+        
+        clone_url = f"https://{clone_id}.clones.betaweb.ai"
         return {
             "success": True,
             "clone_id": clone_id,
-            "response": response.text,
+            "url": clone_url,
+            "elapsed_seconds": round(elapsed, 2),
             "timestamp": datetime.now().isoformat()
         }
     except requests.exceptions.RequestException as e:
@@ -49,62 +49,48 @@ def create_clone(clone_id: str) -> dict:
             "success": False,
             "clone_id": clone_id,
             "error": str(e),
-            "timestamp": datetime.now().isoformat()
+            "elapsed_seconds": round(time.time() - start_time, 2)
         }
 
 def main():
-    print("=" * 70)
-    print(f"BULK CLONE CREATION - {CLONE_COUNT} clones")
-    print("=" * 70)
-    print(f"Source: {SOURCE_URL}")
-    print(f"TTL: {TTL_MINUTES} minutes")
-    print(f"Started: {datetime.now().isoformat()}")
-    print("=" * 70)
+    print(f"\nCreating {CLONE_COUNT} clones (TTL: {TTL_MINUTES} min)...\n")
     
     results = []
+    start = time.time()
     
     for i in range(1, CLONE_COUNT + 1):
         clone_id = f"bulk-test-{i:03d}"
-        print(f"[{i:2d}/{CLONE_COUNT}] Creating {clone_id}...", end=" ")
-        
         result = create_clone(clone_id)
         results.append(result)
         
         if result["success"]:
-            print("OK")
+            print(f"{result['url']} - {result['elapsed_seconds']}s")
         else:
-            print(f"FAILED: {result['error']}")
+            print(f"{clone_id} - FAILED: {result['error']}")
         
-        # Small delay to avoid overwhelming the API
         time.sleep(0.5)
     
-    # Summary
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
+    total_time = round(time.time() - start, 2)
+    successful = [r for r in results if r["success"]]
     
-    successful = sum(1 for r in results if r["success"])
-    failed = CLONE_COUNT - successful
+    print(f"\n{'='*70}")
+    print(f"SUCCESSFUL: {len(successful)}/{CLONE_COUNT}")
+    print(f"TOTAL TIME: {total_time}s")
+    print(f"{'='*70}")
     
-    print(f"Successful: {successful}/{CLONE_COUNT}")
-    print(f"Failed: {failed}/{CLONE_COUNT}")
-    print(f"Completed: {datetime.now().isoformat()}")
+    if successful:
+        print("\nCLONE URLs (copy these):")
+        print(f"{'='*70}")
+        for r in successful:
+            print(r['url'])
+        print(f"{'='*70}\n")
     
-    if failed > 0:
-        print("\nFailed clones:")
-        for r in results:
-            if not r["success"]:
-                print(f"  - {r['clone_id']}: {r['error']}")
-    
-    print("=" * 70)
-    
-    # Save results to file
+    # Save full results
     output_file = f"bulk-clone-results-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)
     
-    print(f"\nResults saved to: {output_file}")
-    print(f"\nAll clones will auto-delete after {TTL_MINUTES} minutes.")
+    print(f"Full results saved to: {output_file}\n")
 
 if __name__ == "__main__":
     main()
