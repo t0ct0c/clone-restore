@@ -1,0 +1,141 @@
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: wordpressclone
+  namespace: wordpress-staging
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: WordPressClone
+    spec:
+      type: object
+      properties:
+        sourceUrl:
+          type: string
+        cloneId:
+          type: string
+        ttlSeconds:
+          type: integer
+        useDedicatedDatabase:
+          type: boolean
+        sourceUsername:
+          type: string
+        sourcePassword:
+          type: string
+    status:
+      type: object
+      properties:
+        cloneUrl:
+          type: string
+        jobStatus:
+          type: string
+        ready:
+          type: boolean
+
+  # Status expressions at spec level (sibling to schema and resources)
+  statusExpressions:
+    cloneUrl: '"http://" + (resources.cloneIngress.status.loadBalancer.ingress[0].hostname ?? "pending") + "/" + schema.spec.cloneId'
+    jobStatus: 'resources.cloneJob.status.conditions[0].type ?? "Pending"'
+    ready: 'resources.cloneJob.status.succeeded == 1'
+
+  resources:
+    # Secret to store credentials
+    - id: cloneSecret
+      template:
+        apiVersion: v1
+        kind: Secret
+        metadata:
+          name: "{{ .spec.cloneId }}-secret"
+        type: Opaque
+        stringData:
+          MYSQL_ROOT_PASSWORD: "{{ .spec.cloneId }}-rootpass"
+          MYSQL_PASSWORD: "{{ .spec.cloneId }}-dbpass"
+          SOURCE_URL: "{{ .spec.cloneId }}"
+          SOURCE_USERNAME: "{{ .spec.sourceUsername }}"
+          SOURCE_PASSWORD: "{{ .spec.sourcePassword }}"
+
+    # WordPress Clone Job
+    - id: cloneJob
+      template:
+        apiVersion: batch/v1
+        kind: Job
+        metadata:
+          name: "{{ .spec.cloneId }}"
+        spec:
+          ttlSecondsAfterFinished: 3600
+          template:
+            metadata:
+              labels:
+                app: wordpress-clone
+                clone-id: "{{ .spec.cloneId }}"
+            spec:
+              restartPolicy: Never
+              containers:
+                - name: wordpress
+                  image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target:latest
+                  imagePullPolicy: Always
+                  ports:
+                    - containerPort: 80
+                      name: http
+                  env:
+                    - name: CLONE_ID
+                      value: "{{ .spec.cloneId }}"
+                    - name: WORDPRESS_DB_HOST
+                      value: "wordpress-staging-shared-rds.cluster-123.us-east-1.rds.amazonaws.com"
+                    - name: WORDPRESS_DB_USER
+                      value: root
+                    - name: WORDPRESS_DB_PASSWORD
+                      valueFrom:
+                        secretKeyRef:
+                          name: "{{ .spec.cloneId }}-secret"
+                          key: MYSQL_ROOT_PASSWORD
+                    - name: WORDPRESS_DB_NAME
+                      value: "{{ .spec.cloneId }}"
+                  resources:
+                    requests:
+                      cpu: 250m
+                      memory: 512Mi
+                    limits:
+                      cpu: 1000m
+                      memory: 1Gi
+
+    # Service to expose the clone
+    - id: cloneService
+      template:
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: "{{ .spec.cloneId }}"
+        spec:
+          type: ClusterIP
+          selector:
+            clone-id: "{{ .spec.cloneId }}"
+          ports:
+            - port: 80
+              targetPort: 80
+              protocol: TCP
+              name: http
+
+    # Ingress for ALB routing
+    - id: cloneIngress
+      template:
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: "{{ .spec.cloneId }}"
+          annotations:
+            alb.ingress.kubernetes.io/scheme: internet-facing
+            alb.ingress.kubernetes.io/target-type: ip
+            alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}]'
+        spec:
+          ingressClassName: alb
+          rules:
+            - http:
+                paths:
+                  - path: "/{{ .spec.cloneId }}"
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: "{{ .spec.cloneId }}"
+                        port:
+                          number: 80

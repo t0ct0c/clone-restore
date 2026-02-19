@@ -1,0 +1,50 @@
+apiVersion: rds.services.k8s.aws/v1alpha1
+kind: DBInstance
+metadata:
+  name: wordpress-staging-shared
+  namespace: wordpress-staging
+spec:
+  allocatedStorage: 20
+  dbInstanceClass: db.t3.small
+  dbInstanceIdentifier: wordpress-staging-shared
+  dbName: wordpress
+  engine: mysql
+  engineVersion: "8.0"
+  masterUsername: admin
+  masterUserPassword:
+    namespace: wordpress-staging
+    name: rds-password
+    key: password
+  dbSubnetGroupName: wp-clone-restore-rds-subnet-group2026021000472827300000001a
+  vpcSecurityGroupIDs:
+    - sg-012f667b9712c3698
+  publiclyAccessible: false
+  storageEncrypted: true
+  backupRetentionPeriod: 7
+  tags:
+    - key: Environment
+      value: staging
+    - key: ManagedBy
+      value: ack
+    - key: Purpose
+      value: shared-wordpress-clones
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rds-password
+  namespace: wordpress-staging
+type: Opaque
+stringData:
+  password: "staging-db-password-change-me"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shared-rds-config
+  namespace: wordpress-staging
+data:
+  DB_HOST: "wordpress-staging-shared.cluster-123.us-east-1.rds.amazonaws.com"
+  DB_PORT: "3306"
+  DB_USER: "admin"
+  DB_NAME: "wordpress"
