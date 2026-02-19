@@ -60,17 +60,23 @@ def _post_rest_api(base_url: str, route: str, headers: dict, timeout: int,
     
     resp = requests.post(primary_url, headers=headers, json=json_data, timeout=timeout)
     
-    # If primary failed with 404 and we used /wp-json/, try POST ?rest_route=
-    if resp.status_code == 404 and "/wp-json/" in primary_url:
-        fallback_url = f"{base}/?rest_route={route}"
-        logger.info(f"POST to {primary_url} got 404, trying POST fallback: {fallback_url}")
-        resp = requests.post(fallback_url, headers=headers, json=json_data, timeout=timeout)
+    # Check if response is HTML instead of JSON (nginx/siteground interception)
+    content_type = resp.headers.get('content-type', '')
+    is_html = 'text/html' in content_type
     
-    # If POST ?rest_route= also failed with 404, try GET ?rest_route= (SiteGround workaround)
-    if resp.status_code == 404:
+    # If primary failed with 404 or returned HTML, try POST ?rest_route=
+    if (resp.status_code == 404 or is_html) and "/wp-json/" in primary_url:
+        fallback_url = f"{base}/?rest_route={route}"
+        logger.info(f"POST to {primary_url} got {resp.status_code}{' (HTML)' if is_html else ''}, trying POST fallback: {fallback_url}")
+        resp = requests.post(fallback_url, headers=headers, json=json_data, timeout=timeout)
+        content_type = resp.headers.get('content-type', '')
+        is_html = 'text/html' in content_type
+    
+    # If POST ?rest_route= also failed, try GET ?rest_route= (SiteGround workaround)
+    if resp.status_code == 404 or is_html:
         get_url = f"{base}/?rest_route={route}"
-        logger.info(f"POST failed with 404, trying GET fallback: {get_url}")
-        resp = requests.get(get_url, headers=headers, json=json_data, timeout=timeout)
+        logger.info(f"POST failed, trying GET fallback: {get_url}")
+        resp = requests.get(get_url, headers=headers, timeout=timeout)
     
     return resp
 

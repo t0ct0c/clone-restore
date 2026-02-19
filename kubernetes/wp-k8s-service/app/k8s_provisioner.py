@@ -141,6 +141,13 @@ class K8sProvisioner:
                     "IngressRoute creation failed, clone may not be accessible"
                 )
 
+            # 7b. Wait for WordPress to be configured and responding
+            logger.info(f"Waiting for WordPress to be ready in {customer_id}...")
+            wp_ready = self._wait_for_wordpress_ready(customer_id, timeout=120)
+            
+            if not wp_ready:
+                logger.warning(f"WordPress not ready after 120s, clone may fail")
+
             # 8. Calculate expiration time
             expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
 
@@ -592,3 +599,26 @@ class K8sProvisioner:
         return self.run_wp_cli_in_container(
             customer_id, f"plugin activate {plugin_slug}"
         )
+
+    def _wait_for_wordpress_ready(self, customer_id: str, timeout: int = 120) -> bool:
+        """Wait for WordPress to be configured and responding"""
+        try:
+            import requests
+            start_time = time.time()
+            service_url = f"http://{customer_id}.{self.namespace}.svc.cluster.local"
+            
+            while time.time() - start_time < timeout:
+                try:
+                    resp = requests.get(f"{service_url}/wp-json/custom-migrator/v1/status", timeout=5)
+                    if resp.status_code == 200:
+                        logger.info(f"WordPress ready: {customer_id}")
+                        return True
+                except:
+                    pass
+                time.sleep(3)
+            
+            logger.warning(f"WordPress not ready after {timeout}s")
+            return False
+        except Exception as e:
+            logger.error(f"Error waiting for WordPress: {e}")
+            return False
