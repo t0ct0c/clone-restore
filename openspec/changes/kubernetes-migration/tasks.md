@@ -449,6 +449,197 @@
 
 ---
 
+## Phase 4.5: Gateway API Migration - Unlimited Clone Routing (Week 3-4)
+
+**Created**: 2026-02-19
+**Status**: PENDING
+**Priority**: Critical (blocks scale beyond 100 clones)
+
+### Background: Why Gateway API?
+
+**Current Approach (Ingress - Path-Based Routing)**:
+```
+clones.betaweb.ai/clone-abc123
+clones.betaweb.ai/clone-def456
+clones.betaweb.ai/clone-ghi789
+```
+
+**Problem**: AWS ALB has a **hard limit of 100 rules per listener**. Each clone path = 1 rule. We hit the limit at 100 concurrent clones.
+
+**New Approach (Gateway API - Subdomain Routing)**:
+```
+clone-abc123.clones.betaweb.ai
+clone-def456.clones.betaweb.ai
+clone-ghi789.clones.betaweb.ai
+```
+
+**Benefits**:
+- ✅ **Unlimited clones** - Uses hostname matching, not path rules
+- ✅ **Clean URLs** - Each clone gets its own subdomain
+- ✅ **Same cost** - Still uses existing ALB ($16-22/month)
+- ✅ **Wildcard TLS** - Single cert for *.clones.betaweb.ai
+- ✅ **Future-proof** - Gateway API is the K8s standard (replaces Ingress)
+
+**What's Being Replaced**:
+- ❌ `kubernetes/manifests/base/wp-k8s-service/ingress.yaml` (Ingress resource)
+- ❌ `kubernetes/wp-k8s-service/app/k8s_provisioner.py::_create_ingress()` (Ingress creation)
+- ❌ Path-based routing annotations (`alb.ingress.kubernetes.io/rewrite-target`)
+
+**What's Being Added**:
+- ✅ `kubernetes/gateway/gateway.yaml` (Gateway resource)
+- ✅ `kubernetes/gateway/httproute-template.yaml` (HTTPRoute template)
+- ✅ `kubernetes/wp-k8s-service/app/k8s_provisioner.py::_create_httproute()` (new method)
+- ✅ Wildcard TLS Secret (ACM certificate)
+
+---
+
+### Task 4.5.1: Obtain Wildcard TLS Certificate
+**Estimate**: 0.5 days
+**Priority**: Critical
+**Dependencies**: DNS access for clones.betaweb.ai
+
+**Steps**:
+- [ ] Request ACM certificate: `aws acm request-certificate --domain-name "*.clones.betaweb.ai" --validation-method DNS --region us-east-1`
+- [ ] Add CNAME validation record to Route53
+- [ ] Wait for validation (5-10 minutes)
+- [ ] Export certificate: `aws acm describe-certificate --certificate-arn <ARN>`
+- [ ] Create Kubernetes Secret: `kubectl create secret tls clones-wildcard-cert --cert=cert.pem --key=key.pem -n wordpress-staging`
+
+**Acceptance Criteria**:
+- ACM certificate issued for *.clones.betaweb.ai
+- Secret `clones-wildcard-cert` exists in wordpress-staging namespace
+
+---
+
+### Task 4.5.2: Deploy Gateway Resource
+**Estimate**: 0.5 days
+**Priority**: Critical
+**Dependencies**: Task 4.5.1
+
+**Steps**:
+- [x] Gateway API CRDs installed: `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.3.0/standard-install.yaml`
+- [ ] Review `kubernetes/gateway/gateway.yaml`
+- [ ] Apply Gateway: `kubectl apply -f kubernetes/gateway/gateway.yaml`
+- [ ] Verify Gateway created: `kubectl get gateway -n wordpress-staging`
+- [ ] Verify ALB updated with wildcard listener
+
+**Acceptance Criteria**:
+- Gateway resource created and ready
+- ALB listening on *.clones.betaweb.ai
+- TLS termination configured with wildcard cert
+
+---
+
+### Task 4.5.3: Update k8s_provisioner.py to Use HTTPRoute
+**Estimate**: 2 days
+**Priority**: Critical
+**Dependencies**: Task 4.5.2
+
+**Steps**:
+- [ ] Create `_create_httproute()` method in `kubernetes/wp-k8s-service/app/k8s_provisioner.py`
+- [ ] Replace `_create_ingress()` calls with `_create_httproute()`
+- [ ] Use hostname pattern: `clone-{customer_id}.clones.betaweb.ai`
+- [ ] Remove path-based routing logic
+- [ ] Update public_url construction to use subdomain format
+- [ ] Test HTTPRoute creation manually
+
+**Code Changes**:
+```python
+# OLD (Ingress):
+# path: /clone-abc123
+# host: clones.betaweb.ai
+
+# NEW (HTTPRoute):
+# hostname: clone-abc123.clones.betaweb.ai
+# path: /
+```
+
+**Acceptance Criteria**:
+- Clone provisioning creates HTTPRoute instead of Ingress
+- HTTPRoute uses subdomain hostname matching
+- No path-based routing in clone ingress
+
+---
+
+### Task 4.5.4: Update DNS Wildcard Record
+**Estimate**: 0.5 days
+**Priority**: Critical
+**Dependencies**: Task 4.5.2
+
+**Steps**:
+- [ ] Get ALB DNS name: `kubectl get gateway clones-gateway -n wordpress-staging -o jsonpath='{.status.addresses[0].value}'`
+- [ ] Add Route53 record:
+  - Type: A (Alias)
+  - Name: *.clones.betaweb.ai
+  - Value: ALB DNS name
+- [ ] Test DNS resolution: `dig clone-test.clones.betaweb.ai`
+
+**Acceptance Criteria**:
+- Wildcard DNS resolves to ALB
+- Any subdomain clones.betaweb.ai resolves correctly
+
+---
+
+### Task 4.5.5: Migrate Existing Clones (if any)
+**Estimate**: 0.5 days
+**Priority**: Medium
+**Dependencies**: Task 4.5.3, Task 4.5.4
+
+**Steps**:
+- [ ] List existing clones with path-based routing
+- [ ] For each active clone:
+  - Delete old Ingress resource
+  - Create new HTTPRoute with subdomain
+  - Update DNS if needed
+- [ ] Verify all clones accessible via new subdomain URLs
+
+**Acceptance Criteria**:
+- All active clones migrated to subdomain routing
+- No path-based clones remaining
+- Zero downtime during migration
+
+---
+
+### Task 4.5.6: Test End-to-End with Gateway API
+**Estimate**: 1 day
+**Priority**: Critical
+**Dependencies**: Task 4.5.3, Task 4.5.4
+
+**Steps**:
+- [ ] Create test clone: `POST /api/clone` with auto_provision=true
+- [ ] Verify HTTPRoute created: `kubectl get httproute -n wordpress-staging`
+- [ ] Verify DNS resolves: `curl -skL https://clone-{id}.clones.betaweb.ai/`
+- [ ] Verify TLS works: `curl -vkL https://clone-{id}.clones.betaweb.ai/`
+- [ ] Test WordPress admin access
+- [ ] Test REST API endpoints
+- [ ] Test TTL cleanup (verify HTTPRoute deleted after expiry)
+
+**Acceptance Criteria**:
+- Clone accessible via subdomain URL
+- HTTPS working with wildcard certificate
+- TTL cleanup removes HTTPRoute correctly
+- No ALB rule limit issues
+
+---
+
+### Task 4.5.7: Cleanup Old Ingress Resources
+**Estimate**: 0.5 days
+**Priority**: Low
+**Dependencies**: Task 4.5.6
+
+**Steps**:
+- [ ] Delete old Ingress manifests from codebase
+- [ ] Remove Ingress creation code from k8s_provisioner.py
+- [ ] Update documentation to reflect subdomain URLs
+- [ ] Update API docs with new URL format
+
+**Acceptance Criteria**:
+- No Ingress resources in wordpress-staging namespace
+- Code only uses HTTPRoute
+- Documentation updated
+
+---
+
 ## Phase 5: Observability Migration (Week 4)
 
 ### Task 5.1: Deploy OpenTelemetry Collector
@@ -476,18 +667,19 @@
 ### Task 6.1: Validation Checklist
 **Estimate**: 2 days
 **Priority**: Critical
-**Dependencies**: Task 3.6, Task 5.1
+**Dependencies**: Task 3.6, Task 4.5.6, Task 5.1
 
 **Steps**:
 - [ ] Clone creation time < 5 minutes
 - [ ] TTL cleanup functional
-- [ ] Path-based routing works
+- [ ] Subdomain routing works (Gateway API)
 - [ ] Browser automation succeeds
 - [ ] Database isolation maintained
 - [ ] Auto-scaling works (HPA + CA)
 - [ ] GitOps workflow functional
 - [ ] Observability metrics available
 - [ ] Cost tracking (should be < $250/mo)
+- [ ] No ALB rule limit issues (unlimited clones via Gateway API)
 
 **Acceptance Criteria**:
 - All validation items pass
@@ -555,12 +747,17 @@
 
 ## Summary
 
-**Total Estimated Duration**: 4-5 weeks
-**Critical Path**: Task 1.1 → 2.2 → 3.1 → 3.2 → 3.6 → 6.1 → 6.2
+**Total Estimated Duration**: 5-6 weeks (added Gateway API migration)
+**Critical Path**: Task 1.1 → 2.2 → 3.1 → 3.2 → 3.6 → 4.5.1 → 4.5.3 → 4.5.6 → 6.1 → 6.2
 
 **Key Milestones**:
 - End of Week 1: EKS cluster + KRO + ACK + Argo CD ready
 - End of Week 2: KRO ResourceGroups working
 - End of Week 3: wp-k8s-service deployed, GitOps functional
-- End of Week 4: Observability migrated, parallel testing complete
-- End of Week 5: Production cutover, EC2 decommissioned
+- End of Week 4: Gateway API migration complete (unlimited clones), Observability migrated
+- End of Week 5: Parallel testing complete
+- End of Week 6: Production cutover, EC2 decommissioned
+
+**Architecture Changes**:
+- Gateway API replaces Ingress for clone routing (removes 100-clone limit)
+- Subdomain routing: `clone-{id}.clones.betaweb.ai` instead of path-based routing

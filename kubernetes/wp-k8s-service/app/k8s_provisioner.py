@@ -10,7 +10,7 @@ import secrets
 import string
 from datetime import datetime, timedelta
 from typing import Optional, Dict
-from kubernetes import client, config
+from kubernetes import client, config, dynamic
 from kubernetes.client.rest import ApiException
 import os
 
@@ -18,7 +18,7 @@ import os
 class K8sProvisioner:
     """Provision ephemeral WordPress clones on Kubernetes with Jobs + TTL"""
 
-    def __init__(self, namespace: str = 'wordpress-staging'):
+    def __init__(self, namespace: str = "wordpress-staging"):
         """
         Initialize Kubernetes provisioner
 
@@ -36,19 +36,20 @@ class K8sProvisioner:
         self.core_api = client.CoreV1Api()
         self.batch_api = client.BatchV1Api()
         self.networking_api = client.NetworkingV1Api()
+        self.dynamic_client = dynamic.DynamicClient(client.ApiClient())
         self.namespace = namespace
 
         # Configuration from environment variables
         self.docker_image = os.getenv(
-            'WORDPRESS_IMAGE',
-            '044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest'
+            "WORDPRESS_IMAGE",
+            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest",
         )
-        self.alb_dns = os.getenv('ALB_DNS', 'clones.betaweb.ai')
+        self.traefik_dns = os.getenv("TRAEFIK_DNS", "clones.betaweb.ai")
 
         # Shared RDS configuration (from ConfigMap)
-        self.use_shared_rds = os.getenv('USE_SHARED_RDS', 'true').lower() == 'true'
-        self.shared_rds_host = os.getenv('SHARED_RDS_HOST', '')
-        self.shared_rds_password = os.getenv('SHARED_RDS_PASSWORD', '')
+        self.use_shared_rds = os.getenv("USE_SHARED_RDS", "true").lower() == "true"
+        self.shared_rds_host = os.getenv("SHARED_RDS_HOST", "")
+        self.shared_rds_password = os.getenv("SHARED_RDS_PASSWORD", "")
 
         logger.info(f"K8sProvisioner initialized for namespace: {namespace}")
         logger.info(f"Shared RDS: {self.use_shared_rds}, Host: {self.shared_rds_host}")
@@ -77,43 +78,41 @@ class K8sProvisioner:
                 customer_id=customer_id,
                 wp_password=wp_password,
                 db_password=db_password,
-                api_key=api_key
+                api_key=api_key,
             )
 
             if not secret_created:
                 return {
-                    'success': False,
-                    'error_code': 'SECRET_CREATE_FAILED',
-                    'message': 'Failed to create Kubernetes Secret'
+                    "success": False,
+                    "error_code": "SECRET_CREATE_FAILED",
+                    "message": "Failed to create Kubernetes Secret",
                 }
 
             # 3. Create database for this clone
             if self.use_shared_rds:
                 db_created = self._create_database_on_shared_rds(
-                    customer_id=customer_id,
-                    db_password=db_password
+                    customer_id=customer_id, db_password=db_password
                 )
 
                 if not db_created:
                     self._cleanup_secret(customer_id)
                     return {
-                        'success': False,
-                        'error_code': 'DB_CREATE_FAILED',
-                        'message': 'Failed to create database on shared RDS'
+                        "success": False,
+                        "error_code": "DB_CREATE_FAILED",
+                        "message": "Failed to create database on shared RDS",
                     }
 
             # 4. Create Job with TTL for WordPress container
             job_created = self._create_job(
-                customer_id=customer_id,
-                ttl_minutes=ttl_minutes
+                customer_id=customer_id, ttl_minutes=ttl_minutes
             )
 
             if not job_created:
                 self._cleanup_secret(customer_id)
                 return {
-                    'success': False,
-                    'error_code': 'JOB_CREATE_FAILED',
-                    'message': 'Failed to create Kubernetes Job'
+                    "success": False,
+                    "error_code": "JOB_CREATE_FAILED",
+                    "message": "Failed to create Kubernetes Job",
                 }
 
             # 5. Wait for pod to be running
@@ -129,17 +128,18 @@ class K8sProvisioner:
                 self._cleanup_job(customer_id)
                 self._cleanup_secret(customer_id)
                 return {
-                    'success': False,
-                    'error_code': 'SERVICE_CREATE_FAILED',
-                    'message': 'Failed to create Kubernetes Service'
+                    "success": False,
+                    "error_code": "SERVICE_CREATE_FAILED",
+                    "message": "Failed to create Kubernetes Service",
                 }
 
-            # 7. Create Ingress for ALB path-based routing
-            path_prefix = f"/{customer_id}"
-            ingress_created = self._create_ingress(customer_id, path_prefix)
+            # 7. Create Traefik IngressRoute for subdomain routing
+            ingressroute_created = self._create_ingressroute(customer_id)
 
-            if not ingress_created:
-                logger.warning("Ingress creation failed, clone may not be accessible via ALB")
+            if not ingressroute_created:
+                logger.warning(
+                    "IngressRoute creation failed, clone may not be accessible"
+                )
 
             # 8. Calculate expiration time
             expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
@@ -147,61 +147,59 @@ class K8sProvisioner:
             # 9. Construct URLs
             # Direct service URL (for internal testing)
             direct_url = f"http://{customer_id}.{self.namespace}.svc.cluster.local"
-            # Public ALB URL
-            public_url = f"https://{self.alb_dns}{path_prefix}"
+            # Public Traefik URL (subdomain-based)
+            public_url = f"https://{customer_id}.clones.betaweb.ai"
 
             logger.info(f"Clone provisioned successfully: {public_url}")
 
             return {
-                'success': True,
-                'target_url': direct_url,
-                'public_url': public_url,
-                'wordpress_username': 'admin',
-                'wordpress_password': wp_password,
-                'api_key': api_key,
-                'expires_at': expires_at.isoformat() + 'Z',
-                'status': 'running',
-                'message': 'Clone provisioned successfully',
-                'customer_id': customer_id,
-                'namespace': self.namespace
+                "success": True,
+                "target_url": direct_url,
+                "public_url": public_url,
+                "wordpress_username": "admin",
+                "wordpress_password": wp_password,
+                "api_key": api_key,
+                "expires_at": expires_at.isoformat() + "Z",
+                "status": "running",
+                "message": "Clone provisioned successfully",
+                "customer_id": customer_id,
+                "namespace": self.namespace,
             }
 
         except Exception as e:
             logger.error(f"Provisioning failed: {e}", exc_info=True)
             return {
-                'success': False,
-                'error_code': 'PROVISION_ERROR',
-                'message': f'Provisioning failed: {str(e)}'
+                "success": False,
+                "error_code": "PROVISION_ERROR",
+                "message": f"Provisioning failed: {str(e)}",
             }
 
     def _generate_password(self, length: int = 16) -> str:
         """Generate secure random password"""
         alphabet = string.ascii_letters + string.digits
-        return ''.join(secrets.choice(alphabet) for _ in range(length))
+        return "".join(secrets.choice(alphabet) for _ in range(length))
 
-    def _create_secret(self, customer_id: str, wp_password: str, db_password: str, api_key: str) -> bool:
+    def _create_secret(
+        self, customer_id: str, wp_password: str, db_password: str, api_key: str
+    ) -> bool:
         """Create Kubernetes Secret for WordPress credentials"""
         try:
             secret = client.V1Secret(
                 metadata=client.V1ObjectMeta(
                     name=f"{customer_id}-credentials",
                     namespace=self.namespace,
-                    labels={
-                        'app': 'wordpress-clone',
-                        'clone-id': customer_id
-                    }
+                    labels={"app": "wordpress-clone", "clone-id": customer_id},
                 ),
                 string_data={
-                    'wordpress-username': 'admin',
-                    'wordpress-password': wp_password,
-                    'db-password': db_password,
-                    'api-key': api_key
-                }
+                    "wordpress-username": "admin",
+                    "wordpress-password": wp_password,
+                    "db-password": db_password,
+                    "api-key": api_key,
+                },
             )
 
             self.core_api.create_namespaced_secret(
-                namespace=self.namespace,
-                body=secret
+                namespace=self.namespace, body=secret
             )
 
             logger.info(f"Secret created: {customer_id}-credentials")
@@ -211,7 +209,9 @@ class K8sProvisioner:
             logger.error(f"Failed to create Secret: {e}")
             return False
 
-    def _create_database_on_shared_rds(self, customer_id: str, db_password: str) -> bool:
+    def _create_database_on_shared_rds(
+        self, customer_id: str, db_password: str
+    ) -> bool:
         """Create MySQL database on shared RDS instance"""
         try:
             import pymysql
@@ -223,16 +223,18 @@ class K8sProvisioner:
             # Connect to shared RDS
             connection = pymysql.connect(
                 host=self.shared_rds_host,
-                user='admin',
+                user="admin",
                 password=self.shared_rds_password,
-                connect_timeout=10
+                connect_timeout=10,
             )
 
             cursor = connection.cursor()
 
             # Create database and user
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-            cursor.execute(f"CREATE USER IF NOT EXISTS '{db_user}'@'%' IDENTIFIED BY '{db_password}'")
+            cursor.execute(
+                f"CREATE USER IF NOT EXISTS '{db_user}'@'%' IDENTIFIED BY '{db_password}'"
+            )
             cursor.execute(f"GRANT ALL PRIVILEGES ON {db_name}.* TO '{db_user}'@'%'")
             cursor.execute("FLUSH PRIVILEGES")
 
@@ -264,10 +266,7 @@ class K8sProvisioner:
                 metadata=client.V1ObjectMeta(
                     name=customer_id,
                     namespace=self.namespace,
-                    labels={
-                        'app': 'wordpress-clone',
-                        'clone-id': customer_id
-                    }
+                    labels={"app": "wordpress-clone", "clone-id": customer_id},
                 ),
                 spec=client.V1JobSpec(
                     # TTL for automatic cleanup after completion
@@ -278,78 +277,94 @@ class K8sProvisioner:
                     backoff_limit=0,  # Don't retry on failure
                     template=client.V1PodTemplateSpec(
                         metadata=client.V1ObjectMeta(
-                            labels={
-                                'app': 'wordpress-clone',
-                                'clone-id': customer_id
-                            }
+                            labels={"app": "wordpress-clone", "clone-id": customer_id}
                         ),
                         spec=client.V1PodSpec(
-                            restart_policy='Never',
+                            restart_policy="Never",
                             containers=[
                                 client.V1Container(
-                                    name='wordpress',
+                                    name="wordpress",
                                     image=self.docker_image,
                                     ports=[
-                                        client.V1ContainerPort(container_port=80, name='http')
+                                        client.V1ContainerPort(
+                                            container_port=80, name="http"
+                                        )
                                     ],
                                     env=[
                                         # Database configuration
-                                        client.V1EnvVar(name='WORDPRESS_DB_HOST', value=f"{db_host}:3306"),
-                                        client.V1EnvVar(name='WORDPRESS_DB_NAME', value=db_name),
-                                        client.V1EnvVar(name='WORDPRESS_DB_USER', value=db_user),
                                         client.V1EnvVar(
-                                            name='WORDPRESS_DB_PASSWORD',
+                                            name="WORDPRESS_DB_HOST",
+                                            value=f"{db_host}:3306",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_NAME", value=db_name
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_USER", value=db_user
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_PASSWORD",
                                             value_from=client.V1EnvVarSource(
                                                 secret_key_ref=client.V1SecretKeySelector(
                                                     name=f"{customer_id}-credentials",
-                                                    key='db-password'
+                                                    key="db-password",
                                                 )
-                                            )
+                                            ),
                                         ),
                                         # WordPress admin credentials
-                                        client.V1EnvVar(name='WP_ADMIN_USER', value='admin'),
                                         client.V1EnvVar(
-                                            name='WP_ADMIN_PASSWORD',
+                                            name="WP_ADMIN_USER", value="admin"
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WP_ADMIN_PASSWORD",
                                             value_from=client.V1EnvVarSource(
                                                 secret_key_ref=client.V1SecretKeySelector(
                                                     name=f"{customer_id}-credentials",
-                                                    key='wordpress-password'
+                                                    key="wordpress-password",
                                                 )
-                                            )
+                                            ),
                                         ),
-                                        client.V1EnvVar(name='WP_ADMIN_EMAIL', value='admin@example.com'),
-                                        # Site URL will be set via ALB
-                                        client.V1EnvVar(name='WP_SITE_URL', value=f"https://{self.alb_dns}/{customer_id}"),
+                                        client.V1EnvVar(
+                                            name="WP_ADMIN_EMAIL",
+                                            value="admin@example.com",
+                                        ),
+                                        # Site URL uses subdomain routing
+                                        client.V1EnvVar(
+                                            name="WP_SITE_URL",
+                                            value=f"https://{customer_id}.clones.betaweb.ai",
+                                        ),
                                     ],
                                     resources=client.V1ResourceRequirements(
-                                        requests={'cpu': '250m', 'memory': '512Mi'},
-                                        limits={'cpu': '500m', 'memory': '1Gi'}
+                                        requests={"cpu": "250m", "memory": "512Mi"},
+                                        limits={"cpu": "500m", "memory": "1Gi"},
                                     ),
                                     liveness_probe=client.V1Probe(
-                                        http_get=client.V1HTTPGetAction(path='/', port=80),
+                                        http_get=client.V1HTTPGetAction(
+                                            path="/", port=80
+                                        ),
                                         initial_delay_seconds=30,
                                         period_seconds=10,
                                         timeout_seconds=5,
-                                        failure_threshold=3
+                                        failure_threshold=3,
                                     ),
                                     readiness_probe=client.V1Probe(
-                                        http_get=client.V1HTTPGetAction(path='/wp-json/custom-migrator/v1/status', port=80),
+                                        http_get=client.V1HTTPGetAction(
+                                            path="/wp-json/custom-migrator/v1/status",
+                                            port=80,
+                                        ),
                                         initial_delay_seconds=20,
                                         period_seconds=5,
                                         timeout_seconds=3,
-                                        failure_threshold=6
-                                    )
+                                        failure_threshold=6,
+                                    ),
                                 )
-                            ]
-                        )
-                    )
-                )
+                            ],
+                        ),
+                    ),
+                ),
             )
 
-            self.batch_api.create_namespaced_job(
-                namespace=self.namespace,
-                body=job
-            )
+            self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
 
             logger.info(f"Job created: {customer_id} (TTL: {ttl_minutes}min)")
             return True
@@ -365,14 +380,13 @@ class K8sProvisioner:
 
             while time.time() - start_time < timeout:
                 pods = self.core_api.list_namespaced_pod(
-                    namespace=self.namespace,
-                    label_selector=f"clone-id={customer_id}"
+                    namespace=self.namespace, label_selector=f"clone-id={customer_id}"
                 )
 
                 if pods.items:
                     pod = pods.items[0]
 
-                    if pod.status.phase == 'Running':
+                    if pod.status.phase == "Running":
                         logger.info(f"Pod {pod.metadata.name} is running")
                         return True
 
@@ -394,30 +408,21 @@ class K8sProvisioner:
                 metadata=client.V1ObjectMeta(
                     name=customer_id,
                     namespace=self.namespace,
-                    labels={
-                        'app': 'wordpress-clone',
-                        'clone-id': customer_id
-                    }
+                    labels={"app": "wordpress-clone", "clone-id": customer_id},
                 ),
                 spec=client.V1ServiceSpec(
-                    type='ClusterIP',
-                    selector={
-                        'clone-id': customer_id
-                    },
+                    type="ClusterIP",
+                    selector={"clone-id": customer_id},
                     ports=[
                         client.V1ServicePort(
-                            name='http',
-                            port=80,
-                            target_port=80,
-                            protocol='TCP'
+                            name="http", port=80, target_port=80, protocol="TCP"
                         )
-                    ]
-                )
+                    ],
+                ),
             )
 
             self.core_api.create_namespaced_service(
-                namespace=self.namespace,
-                body=service
+                namespace=self.namespace, body=service
             )
 
             logger.info(f"Service created: {customer_id}")
@@ -427,73 +432,49 @@ class K8sProvisioner:
             logger.error(f"Failed to create Service: {e}")
             return False
 
-    def _create_ingress(self, customer_id: str, path_prefix: str) -> bool:
-        """Create Ingress for ALB path-based routing"""
+    def _create_ingressroute(self, customer_id: str) -> bool:
+        """Create Traefik IngressRoute for subdomain routing (unlimited clones)"""
         try:
-            ingress = client.V1Ingress(
-                metadata=client.V1ObjectMeta(
-                    name=customer_id,
-                    namespace=self.namespace,
-                    labels={
-                        'app': 'wordpress-clone',
-                        'clone-id': customer_id
-                    },
-                    annotations={
-                        # AWS Load Balancer Controller annotations
-                        'alb.ingress.kubernetes.io/scheme': 'internet-facing',
-                        'alb.ingress.kubernetes.io/target-type': 'ip',
-                        'alb.ingress.kubernetes.io/listen-ports': '[{"HTTPS":443}]',
-                        'alb.ingress.kubernetes.io/ssl-redirect': '443',
-                        # Group multiple Ingresses into single ALB
-                        'alb.ingress.kubernetes.io/group.name': 'wordpress-clones',
-                        # Path rewrite (remove prefix before forwarding to pod)
-                        'alb.ingress.kubernetes.io/rewrite-target': '/',
-                    }
-                ),
-                spec=client.V1IngressSpec(
-                    ingress_class_name='alb',
-                    rules=[
-                        client.V1IngressRule(
-                            host=self.alb_dns,
-                            http=client.V1HTTPIngressRuleValue(
-                                paths=[
-                                    client.V1HTTPIngressPath(
-                                        path=f"{path_prefix}/*",
-                                        path_type='ImplementationSpecific',
-                                        backend=client.V1IngressBackend(
-                                            service=client.V1IngressServiceBackend(
-                                                name=customer_id,
-                                                port=client.V1ServiceBackendPort(
-                                                    number=80
-                                                )
-                                            )
-                                        )
-                                    )
-                                ]
-                            )
-                        )
-                    ]
-                )
-            )
+            # Subdomain-based routing: clone-{id}.clones.betaweb.ai
+            subdomain = f"{customer_id}.clones.betaweb.ai"
 
-            self.networking_api.create_namespaced_ingress(
-                namespace=self.namespace,
-                body=ingress
-            )
+            ingressroute = {
+                "apiVersion": "traefik.io/v1alpha1",
+                "kind": "IngressRoute",
+                "metadata": {
+                    "name": customer_id,
+                    "namespace": self.namespace,
+                    "labels": {"app": "wordpress-clone", "clone-id": customer_id},
+                },
+                "spec": {
+                    "entryPoints": ["web", "websecure"],
+                    "routes": [
+                        {
+                            "match": f"Host(`{subdomain}`)",
+                            "kind": "Rule",
+                            "services": [{"name": customer_id, "port": 80}],
+                        }
+                    ],
+                },
+            }
 
-            logger.info(f"Ingress created: {customer_id} (path: {path_prefix})")
+            # Use dynamic client for CRD
+            self.dynamic_client.resources.get(
+                api_version="traefik.io/v1alpha1", kind="IngressRoute"
+            ).create(namespace=self.namespace, body=ingressroute)
+
+            logger.info(f"IngressRoute created: {customer_id} (subdomain: {subdomain})")
             return True
 
-        except ApiException as e:
-            logger.error(f"Failed to create Ingress: {e}")
+        except Exception as e:
+            logger.error(f"Failed to create IngressRoute: {e}")
             return False
 
     def _cleanup_secret(self, customer_id: str):
         """Delete Secret"""
         try:
             self.core_api.delete_namespaced_secret(
-                name=f"{customer_id}-credentials",
-                namespace=self.namespace
+                name=f"{customer_id}-credentials", namespace=self.namespace
             )
             logger.info(f"Deleted Secret: {customer_id}-credentials")
         except ApiException:
@@ -505,7 +486,7 @@ class K8sProvisioner:
             self.batch_api.delete_namespaced_job(
                 name=customer_id,
                 namespace=self.namespace,
-                propagation_policy='Foreground'
+                propagation_policy="Foreground",
             )
             logger.info(f"Deleted Job: {customer_id}")
         except ApiException:
@@ -525,8 +506,7 @@ class K8sProvisioner:
         try:
             # Find the pod
             pods = self.core_api.list_namespaced_pod(
-                namespace=self.namespace,
-                label_selector=f"clone-id={customer_id}"
+                namespace=self.namespace, label_selector=f"clone-id={customer_id}"
             )
 
             if not pods.items:
@@ -539,9 +519,9 @@ class K8sProvisioner:
             from kubernetes.stream import stream
 
             exec_command = [
-                '/bin/sh',
-                '-c',
-                f'wp {wp_cli_command} --path=/var/www/html --allow-root'
+                "/bin/sh",
+                "-c",
+                f"wp {wp_cli_command} --path=/var/www/html --allow-root",
             ]
 
             resp = stream(
@@ -552,7 +532,7 @@ class K8sProvisioner:
                 stderr=True,
                 stdin=False,
                 stdout=True,
-                tty=False
+                tty=False,
             )
 
             logger.info(f"WP-CLI command output: {resp}")
@@ -577,18 +557,16 @@ class K8sProvisioner:
             # Update database URLs
             self.run_wp_cli_in_container(
                 customer_id,
-                f'db query "UPDATE wp_options SET option_value = \\"{public_url}\\" WHERE option_name IN (\\"home\\", \\"siteurl\\");"'
+                f'db query "UPDATE wp_options SET option_value = \\"{public_url}\\" WHERE option_name IN (\\"home\\", \\"siteurl\\");"',
             )
 
             # Lock URLs in wp-config.php
             self.run_wp_cli_in_container(
-                customer_id,
-                f'config set WP_HOME "{public_url}" --type=constant'
+                customer_id, f'config set WP_HOME "{public_url}" --type=constant'
             )
 
             self.run_wp_cli_in_container(
-                customer_id,
-                f'config set WP_SITEURL "{public_url}" --type=constant'
+                customer_id, f'config set WP_SITEURL "{public_url}" --type=constant'
             )
 
             logger.info(f"WordPress URLs updated to {public_url}")
@@ -598,7 +576,9 @@ class K8sProvisioner:
             logger.warning(f"Failed to update WordPress URLs: {e}")
             return False
 
-    def activate_plugin_in_container(self, customer_id: str, plugin_slug: str = 'custom-migrator') -> bool:
+    def activate_plugin_in_container(
+        self, customer_id: str, plugin_slug: str = "custom-migrator"
+    ) -> bool:
         """
         Activate WordPress plugin via WP-CLI
 
@@ -610,6 +590,5 @@ class K8sProvisioner:
             True if successful, False otherwise
         """
         return self.run_wp_cli_in_container(
-            customer_id,
-            f'plugin activate {plugin_slug}'
+            customer_id, f"plugin activate {plugin_slug}"
         )

@@ -4,18 +4,16 @@ metadata:
   name: wp-k8s-service
   namespace: wordpress-staging
   annotations:
-    # AWS Load Balancer Controller annotations
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: wp-clones-main
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
-    # Health check configuration
     alb.ingress.kubernetes.io/healthcheck-path: /health
     alb.ingress.kubernetes.io/healthcheck-interval-seconds: '30'
     alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '10'
     alb.ingress.kubernetes.io/healthy-threshold-count: '2'
     alb.ingress.kubernetes.io/unhealthy-threshold-count: '3'
-    # Tags
     alb.ingress.kubernetes.io/tags: Environment=staging,Service=wp-k8s-service
   labels:
     app: wp-k8s-service
@@ -25,43 +23,42 @@ spec:
   - host: clones.betaweb.ai
     http:
       paths:
-      # API endpoints
-      - path: /clone
+      - path: /api/clone
         pathType: Prefix
         backend:
           service:
             name: wp-k8s-service
             port:
               number: 80
-      - path: /restore
+      - path: /api/restore
         pathType: Prefix
         backend:
           service:
             name: wp-k8s-service
             port:
               number: 80
-      - path: /setup
+      - path: /api/setup
         pathType: Prefix
         backend:
           service:
             name: wp-k8s-service
             port:
               number: 80
-      - path: /create-app-password
+      - path: /api/create-app-password
         pathType: Prefix
         backend:
           service:
             name: wp-k8s-service
             port:
               number: 80
-      - path: /health
+      - path: /api/health
         pathType: Prefix
         backend:
           service:
             name: wp-k8s-service
             port:
               number: 80
-      - path: /logs
+      - path: /api/logs
         pathType: Prefix
         backend:
           service:

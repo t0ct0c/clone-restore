@@ -1,0 +1,15 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: clone-example
+  namespace: wordpress-staging
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`clone-example.clones.betaweb.ai`)
+      kind: Rule
+      services:
+        - name: clone-example-service
+          port: 80

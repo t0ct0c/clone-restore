@@ -1,0 +1,27 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: clones-gateway
+  namespace: wordpress-staging
+spec:
+  gatewayClassName: alb
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    hostname: "*.clones.betaweb.ai"
+    allowedRoutes:
+      namespaces:
+        from: Same
+  - name: https
+    protocol: HTTPS
+    port: 443
+    hostname: "*.clones.betaweb.ai"
+    tls:
+      mode: Terminate
+      options:
+        alb.ingress.kubernetes.io/cert-arn: arn:aws:acm:us-east-1:044514005641:certificate/bfc7e6f0-f6cb-4434-b42a-4054a9c8f806
+        alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+    allowedRoutes:
+      namespaces:
+        from: Same
