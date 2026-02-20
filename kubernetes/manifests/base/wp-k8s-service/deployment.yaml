@@ -20,7 +20,7 @@ spec:
       serviceAccountName: wp-k8s-service
       containers:
       - name: wp-k8s-service
-        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260220-163000-async
+        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260220-173000-fix
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -91,7 +91,7 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 3
       - name: dramatiq-worker
-        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260220-163000-async
+        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260220-173000-fix
         imagePullPolicy: Always
         command: ["dramatiq", "app.main", "--queues", "clone-queue", "--processes", "2", "--threads", "2"]
         env:

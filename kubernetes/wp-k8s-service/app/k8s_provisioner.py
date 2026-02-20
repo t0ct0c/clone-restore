@@ -75,8 +75,8 @@ class K8sProvisioner:
             db_password = self._generate_password()
             api_key = "migration-master-key"  # Fixed key for setup phase
 
-            # 2. Create Secret for credentials
-            secret_created = self._create_secret(
+            # 2. Create Secret for credentials (may return existing password)
+            secret_created, existing_db_password = self._create_secret(
                 customer_id=customer_id,
                 wp_password=wp_password,
                 db_password=db_password,
@@ -92,8 +92,14 @@ class K8sProvisioner:
 
             # 3. Create database for this clone
             if self.use_shared_rds:
+                # Use existing password from secret if it existed, otherwise use new password
+                db_password_to_use = (
+                    existing_db_password if existing_db_password else db_password
+                )
                 db_created = self._create_database_on_shared_rds(
-                    customer_id=customer_id, db_password=db_password
+                    customer_id=customer_id,
+                    db_password=db_password_to_use,
+                    existing_password=existing_db_password,
                 )
 
                 if not db_created:
@@ -194,10 +200,43 @@ class K8sProvisioner:
         alphabet = string.ascii_letters + string.digits
         return "".join(secrets.choice(alphabet) for _ in range(length))
 
+    def _get_secret_db_password(self, customer_id: str):
+        """Get DB password from existing secret if it exists"""
+        try:
+            secret = self.core_api.read_namespaced_secret(
+                name=f"{customer_id}-credentials",
+                namespace=self.namespace,
+            )
+            password = secret.data.get("db-password", "")
+            if password:
+                import base64
+
+                return base64.b64decode(password).decode("utf-8")
+        except:
+            pass
+        return None
+
+    def _db_user_exists(self, customer_id: str, cursor) -> bool:
+        """Check if database user exists on RDS"""
+        db_name = f"wp_{customer_id.replace('-', '_')}"
+        db_user = db_name
+        try:
+            cursor.execute(
+                "SELECT 1 FROM mysql.user WHERE User = %s AND Host = '%'", (db_user,)
+            )
+            return cursor.fetchone() is not None
+        except:
+            return False
+
     def _create_secret(
         self, customer_id: str, wp_password: str, db_password: str, api_key: str
-    ) -> bool:
-        """Create Kubernetes Secret for WordPress credentials"""
+    ) -> tuple:
+        """Create Kubernetes Secret for WordPress credentials
+
+        Returns:
+            tuple: (success: bool, password_from_secret: str or None)
+                   If secret existed, returns the existing password
+        """
         try:
             secret = client.V1Secret(
                 metadata=client.V1ObjectMeta(
@@ -218,19 +257,32 @@ class K8sProvisioner:
             )
 
             logger.info(f"Secret created: {customer_id}-credentials")
-            return True
+            return True, None
 
         except ApiException as e:
             if e.status == 409:
                 logger.warning(f"Secret already exists: {customer_id}-credentials")
-                return True
+                # Get the existing password from the secret
+                existing_password = self._get_secret_db_password(customer_id)
+                if existing_password:
+                    logger.info(
+                        f"Using existing DB password from secret for {customer_id}"
+                    )
+                    return True, existing_password
+                return True, None
             logger.error(f"Failed to create Secret: {e}")
-            return False
+            return False, None
 
     def _create_database_on_shared_rds(
-        self, customer_id: str, db_password: str
+        self, customer_id: str, db_password: str, existing_password: str = None
     ) -> bool:
-        """Create MySQL database on shared RDS instance"""
+        """Create MySQL database on shared RDS instance
+
+        Args:
+            customer_id: Clone identifier
+            db_password: New password to use (if creating user)
+            existing_password: Password from existing secret (if secret already existed)
+        """
         try:
             import pymysql
 
@@ -248,18 +300,40 @@ class K8sProvisioner:
 
             cursor = connection.cursor()
 
-            # Create database and user
+            # Create database
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
-            cursor.execute(
-                f"CREATE USER IF NOT EXISTS '{db_user}'@'%' IDENTIFIED BY '{db_password}'"
-            )
+
+            # Check if user exists
+            user_exists = self._db_user_exists(customer_id, cursor)
+
+            if user_exists and existing_password:
+                # User exists and we have password from secret - ensure they match
+                # Update password to match secret (handles case where DB was recreated)
+                cursor.execute(
+                    f"ALTER USER '{db_user}'@'%' IDENTIFIED BY '{existing_password}'"
+                )
+                logger.info(f"Updated existing DB user password for {db_user}")
+            elif user_exists:
+                # User exists but no existing password - use new password
+                cursor.execute(
+                    f"ALTER USER '{db_user}'@'%' IDENTIFIED BY '{db_password}'"
+                )
+                logger.info(f"Updated DB user password for {db_user}")
+            else:
+                # Create new user
+                cursor.execute(
+                    f"CREATE USER '{db_user}'@'%' IDENTIFIED BY '{db_password}'"
+                )
+                logger.info(f"Created new DB user: {db_user}")
+
+            # Grant privileges (idempotent)
             cursor.execute(f"GRANT ALL PRIVILEGES ON {db_name}.* TO '{db_user}'@'%'")
             cursor.execute("FLUSH PRIVILEGES")
 
             cursor.close()
             connection.close()
 
-            logger.info(f"Database created on shared RDS: {db_name}")
+            logger.info(f"Database configured on shared RDS: {db_name}")
             return True
 
         except Exception as e:
