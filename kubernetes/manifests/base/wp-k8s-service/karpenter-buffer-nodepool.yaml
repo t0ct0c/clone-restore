@@ -1,0 +1,118 @@
+# Karpenter Buffer NodePool - Maintains 2 warm standby nodes
+# Purpose: Eliminate Pending state for immediate clone provisioning
+# Cost: ~$0.02-0.04/hour for 2 t2.small spot instances (~$15-30/month)
+#
+# How it works:
+# - 2 NodeClaims create 2 permanent buffer nodes
+# - Nodes accept WordPress clone pods immediately (0s Pending)
+# - When clones deleted, nodes stay warm for 10min before consolidation
+# - Karpenter auto-replaces buffer nodes if they terminate
+
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: buffer-pool
+  labels:
+    app: wordpress-clone
+    purpose: buffer
+spec:
+  # Limits: 2 t2.small = 2 vCPU + 4Gi total
+  limits:
+    cpu: "4"
+    memory: 8Gi
+  
+  # Keep nodes warm for 10min after pods deleted
+  disruption:
+    consolidationPolicy: WhenEmpty
+    consolidateAfter: 10m
+  
+  template:
+    metadata:
+      labels:
+        karpenter.sh/capacity-type: spot
+        purpose: buffer
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+      
+      # Smallest cost-effective instances
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["t"]
+        - key: karpenter.k8s.aws/instance-size
+          operator: In
+          values: ["small", "medium"]
+      
+      # Never expire (NodeClaims manage lifecycle)
+      expireAfter: Never
+---
+# Buffer Node 1 - Permanent warm standby
+apiVersion: karpenter.sh/v1
+kind: NodeClaim
+metadata:
+  name: buffer-pool-1
+  labels:
+    karpenter.sh/nodepool: buffer-pool
+spec:
+  nodeClassRef:
+    group: karpenter.k8s.aws
+    kind: EC2NodeClass
+    name: default
+  requirements:
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values: ["spot"]
+    - key: kubernetes.io/arch
+      operator: In
+      values: ["amd64"]
+    - key: karpenter.k8s.aws/instance-category
+      operator: In
+      values: ["t"]
+    - key: karpenter.k8s.aws/instance-size
+      operator: In
+      values: ["small"]
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+  expireAfter: Never
+---
+# Buffer Node 2 - Permanent warm standby
+apiVersion: karpenter.sh/v1
+kind: NodeClaim
+metadata:
+  name: buffer-pool-2
+  labels:
+    karpenter.sh/nodepool: buffer-pool
+spec:
+  nodeClassRef:
+    group: karpenter.k8s.aws
+    kind: EC2NodeClass
+    name: default
+  requirements:
+    - key: karpenter.sh/capacity-type
+      operator: In
+      values: ["spot"]
+    - key: kubernetes.io/arch
+      operator: In
+      values: ["amd64"]
+    - key: karpenter.k8s.aws/instance-category
+      operator: In
+      values: ["t"]
+    - key: karpenter.k8s.aws/instance-size
+      operator: In
+      values: ["small"]
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+  expireAfter: Never
