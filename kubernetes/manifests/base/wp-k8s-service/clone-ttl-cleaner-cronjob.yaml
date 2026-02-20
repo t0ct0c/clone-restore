@@ -19,16 +19,16 @@ spec:
           restartPolicy: OnFailure
           containers:
           - name: cleaner
-            image: bitnami/kubectl:1.35.0
+            image: bitnami/kubectl:1.32.0
             command:
             - /bin/sh
             - -c
             - |
               echo "Starting TTL cleanup at $(date)"
               
-              # Get current time in UTC
-              NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-              echo "Current time: $NOW"
+              # Get current time as Unix timestamp
+              NOW=$(date +%s)
+              echo "Current timestamp: $NOW"
               
               # Find all deployments with ttl-expires-at label
               DEPLOYMENTS=$(kubectl get deployments -n wordpress-staging \
@@ -44,8 +44,8 @@ spec:
                 
                 echo "Checking deployment: $NAME (TTL: $TTL)"
                 
-                # Compare timestamps (string comparison works for ISO 8601 format)
-                if [[ "$TTL" < "$NOW" ]]; then
+                # Compare Unix timestamps
+                if [[ "$TTL" -lt "$NOW" ]]; then
                   echo "  → EXPIRED! Deleting deployment: $NAME"
                   
                   # Delete deployment

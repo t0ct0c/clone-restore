@@ -123,6 +123,14 @@ class K8sProvisioner:
             if not pod_ready:
                 logger.warning(f"Pod not ready after 180s, but continuing...")
 
+            # 5b. Activate custom-migrator plugin (required for WordPress initialization)
+            logger.info(f"Activating custom-migrator plugin for {customer_id}...")
+            plugin_activated = self.activate_plugin_in_container(customer_id)
+            if not plugin_activated:
+                logger.warning(
+                    f"Failed to activate plugin for {customer_id}, continuing anyway..."
+                )
+
             # 6. Create Service to expose the pod
             service_created = self._create_service(customer_id)
 
@@ -275,7 +283,8 @@ class K8sProvisioner:
 
             # Calculate TTL expiration time
             ttl_expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
-            ttl_label = ttl_expires_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+            # Use Unix timestamp for label (K8s labels can't contain colons)
+            ttl_label = str(int(ttl_expires_at.timestamp()))
 
             # Deployment spec with TTL label
             deployment = client.V1Deployment(

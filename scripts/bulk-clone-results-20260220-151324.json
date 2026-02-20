@@ -1,0 +1,1018 @@
+{
+  "test_config": {
+    "clone_count": 100,
+    "ttl_minutes": 30,
+    "source_url": "https://betaweb.ai",
+    "timestamp": "2026-02-20T15:13:24.951967",
+    "submit_time_seconds": 69.83,
+    "total_time_seconds": 48.14
+  },
+  "results": [
+    {
+      "success": true,
+      "clone_id": "load-test-001",
+      "job_id": "131a1cc6-f59d-4b58-a1c7-d462332ca448",
+      "url": "https://load-test-001.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:27.513552",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-002",
+      "job_id": "dca592c3-db76-46fe-a1b7-bde093d25095",
+      "url": "https://load-test-002.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:28.217603",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-003",
+      "job_id": "366b96f5-7496-4bba-9636-0d6c65611fe4",
+      "url": "https://load-test-003.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:28.969489",
+      "elapsed_seconds": 0.55,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-004",
+      "job_id": "29165a85-4a41-4d1c-b76c-4bf96d3e194b",
+      "url": "https://load-test-004.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:29.700072",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-005",
+      "job_id": "9fac9e09-03ed-4520-a7d7-13399cc66d28",
+      "url": "https://load-test-005.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:30.422597",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-006",
+      "job_id": "dcced041-00a0-442b-b904-424f508e391b",
+      "url": "https://load-test-006.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:31.093872",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-007",
+      "job_id": "cd656203-6924-4f0a-96c3-ce28249ede04",
+      "url": "https://load-test-007.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:31.773390",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-008",
+      "job_id": "8ab9580e-7a0c-4294-b434-936773c8c51e",
+      "url": "https://load-test-008.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:32.492709",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-009",
+      "job_id": "b0ade7cc-bd05-4dee-a8e3-00f5fda54da1",
+      "url": "https://load-test-009.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:33.171861",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-010",
+      "job_id": "8252e8c6-2bd0-4618-af7d-ca8ca9d62331",
+      "url": "https://load-test-010.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:33.861308",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-011",
+      "job_id": "aaeab8ac-71be-4e9b-9c79-3d477ea4d9ab",
+      "url": "https://load-test-011.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:34.550774",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-012",
+      "job_id": "eee3978b-fd4e-4fe5-8b7d-fc000a9208f2",
+      "url": "https://load-test-012.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:35.279443",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-013",
+      "job_id": "5cae534a-e4b8-4d97-b750-52ab19aeab6f",
+      "url": "https://load-test-013.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:35.975608",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-014",
+      "job_id": "594ad0a5-b650-4194-9913-30580a666b12",
+      "url": "https://load-test-014.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:36.688315",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-015",
+      "job_id": "387a92a0-0773-46d9-a5a3-1e168a15d5ab",
+      "url": "https://load-test-015.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:37.400146",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-016",
+      "job_id": "981aaa39-faf2-44fd-96d9-dc5734f6b2ef",
+      "url": "https://load-test-016.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:38.085009",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-017",
+      "job_id": "5a703d81-eb1a-4536-9121-93adbed7679a",
+      "url": "https://load-test-017.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:38.804779",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-018",
+      "job_id": "0f5e009c-2c8d-428c-996b-8281c3b29816",
+      "url": "https://load-test-018.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:39.532564",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-019",
+      "job_id": "43e59962-f933-46fa-bfe0-b667699ae89c",
+      "url": "https://load-test-019.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:40.219564",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-020",
+      "job_id": "a63186c0-ad60-46ac-b5ba-c67ec4037260",
+      "url": "https://load-test-020.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:40.922206",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-021",
+      "job_id": "f210d11a-bbc4-4505-81ff-b0ddb5f09360",
+      "url": "https://load-test-021.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:41.595152",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-022",
+      "job_id": "70a575d3-f5a8-481b-9e98-e4de2a77a6e3",
+      "url": "https://load-test-022.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:42.300857",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-023",
+      "job_id": "bb3dbe55-204e-49c1-8563-524c96f23eb6",
+      "url": "https://load-test-023.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:43.002771",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-024",
+      "job_id": "37893822-56e8-48da-8603-7cafb317710e",
+      "url": "https://load-test-024.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:43.735371",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-025",
+      "job_id": "82c36cd3-e682-40ab-98cc-b932803d0ed1",
+      "url": "https://load-test-025.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:44.440213",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-026",
+      "job_id": "05b25ccd-e7e9-46b8-84ee-23995fd9e355",
+      "url": "https://load-test-026.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:45.093890",
+      "elapsed_seconds": 0.45,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-027",
+      "job_id": "b8a0c094-882f-400a-ab3a-d68dd459d06e",
+      "url": "https://load-test-027.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:45.794038",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-028",
+      "job_id": "283f14e8-e38a-4e03-b248-01f6714d9c3c",
+      "url": "https://load-test-028.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:46.483459",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-029",
+      "job_id": "1dc22a3b-cc4e-4a59-a9b9-114fe816781e",
+      "url": "https://load-test-029.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:47.191285",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-030",
+      "job_id": "ee0e076a-e9fa-449f-9cc8-f4b71e7059a5",
+      "url": "https://load-test-030.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:47.868583",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-031",
+      "job_id": "cb0c8f8a-4434-4fb5-8214-36ced418cb31",
+      "url": "https://load-test-031.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:48.558388",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-032",
+      "job_id": "1caac70b-2945-4c06-911c-8ff5dbe58d2f",
+      "url": "https://load-test-032.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:49.243857",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-033",
+      "job_id": "0524d8b2-aafc-49d6-8924-bf4627666a65",
+      "url": "https://load-test-033.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:49.921241",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-034",
+      "job_id": "a46e3cf2-7043-482d-884c-92ab406e9c13",
+      "url": "https://load-test-034.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:50.595848",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-035",
+      "job_id": "5f1043f6-2f09-4050-9532-ad07880ec2d4",
+      "url": "https://load-test-035.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:51.275667",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-036",
+      "job_id": "659130ea-2df5-4515-851b-973de25e25c1",
+      "url": "https://load-test-036.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:52.009687",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-037",
+      "job_id": "10baa56b-aa53-486a-a802-39c057f6947a",
+      "url": "https://load-test-037.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:52.790997",
+      "elapsed_seconds": 0.58,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-038",
+      "job_id": "35779f68-464c-4880-afe2-68706ec01887",
+      "url": "https://load-test-038.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:53.468057",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-039",
+      "job_id": "d20bd35a-ff19-4cc3-9932-ede3b7075145",
+      "url": "https://load-test-039.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:54.188079",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-040",
+      "job_id": "0c2d27df-60cf-406d-a91c-766bf8f6c075",
+      "url": "https://load-test-040.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:54.885733",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-041",
+      "job_id": "6af0aef6-49f4-4c60-af89-0f2493c0a6fc",
+      "url": "https://load-test-041.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:55.546630",
+      "elapsed_seconds": 0.46,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-042",
+      "job_id": "68cebb94-0636-4eab-aaff-2f676bdd6d5f",
+      "url": "https://load-test-042.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:56.260933",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-043",
+      "job_id": "dd0d463e-31ac-476f-bf94-6db7e97b352e",
+      "url": "https://load-test-043.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:56.946546",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-044",
+      "job_id": "8ca849ad-36c2-4d52-822f-9d8e27a4368e",
+      "url": "https://load-test-044.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:57.634524",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-045",
+      "job_id": "5e800ed0-15cc-41f2-824a-ec8b655a3ea7",
+      "url": "https://load-test-045.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:58.307976",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-046",
+      "job_id": "795b7878-cca1-4ea7-a556-464ec51c8d53",
+      "url": "https://load-test-046.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:58.987457",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-047",
+      "job_id": "92167840-3f49-48a5-9325-c1aff76a74ae",
+      "url": "https://load-test-047.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:11:59.657601",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-048",
+      "job_id": "99f5e862-af10-4a98-8bc1-f05162b082f4",
+      "url": "https://load-test-048.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:00.415611",
+      "elapsed_seconds": 0.56,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-049",
+      "job_id": "b4e5aece-6175-4798-82ee-5c1be8390099",
+      "url": "https://load-test-049.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:01.136218",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-050",
+      "job_id": "4333e30c-d38c-4358-a204-fe214283b164",
+      "url": "https://load-test-050.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:01.813872",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-051",
+      "job_id": "3994b8f0-800b-4692-8aee-90d69317fac0",
+      "url": "https://load-test-051.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:02.491092",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-052",
+      "job_id": "f801bb1c-9dac-4b41-8ee1-bcc3dbf3f016",
+      "url": "https://load-test-052.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:03.214493",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-053",
+      "job_id": "99e6d404-eca9-4e55-95c0-dfe49f3416c6",
+      "url": "https://load-test-053.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:03.942029",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-054",
+      "job_id": "9e7463ee-10b3-4328-8596-e42214715126",
+      "url": "https://load-test-054.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:04.631573",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-055",
+      "job_id": "16fcd905-8782-4738-b5e1-6bde28c36e8d",
+      "url": "https://load-test-055.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:05.317055",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-056",
+      "job_id": "a48c70d8-ddaf-4eb4-b71d-c72144a29fef",
+      "url": "https://load-test-056.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:06.024252",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-057",
+      "job_id": "bc089934-bb8e-4591-94df-78f547fa13f2",
+      "url": "https://load-test-057.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:06.694057",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-058",
+      "job_id": "cca4d14d-3287-46d3-843d-52c8808bdfa1",
+      "url": "https://load-test-058.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:07.369109",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-059",
+      "job_id": "65d83787-90f6-48fb-ad7a-4ef8823a67a3",
+      "url": "https://load-test-059.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:08.041281",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-060",
+      "job_id": "0fdf12a3-5771-4258-836f-a9c0d810b984",
+      "url": "https://load-test-060.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:08.746932",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-061",
+      "job_id": "4a1f39c8-7ec6-46a7-aa3d-4eb52b26cdcb",
+      "url": "https://load-test-061.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:09.449181",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-062",
+      "job_id": "cf3e0118-0937-41b3-bb0e-d6eb38c4ad8e",
+      "url": "https://load-test-062.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:10.105119",
+      "elapsed_seconds": 0.46,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-063",
+      "job_id": "5105e683-0aef-4369-bc6f-7cff9df2948d",
+      "url": "https://load-test-063.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:10.775054",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-064",
+      "job_id": "8cc4bcb1-e8b5-49f9-aeb6-20649629f726",
+      "url": "https://load-test-064.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:11.505351",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-065",
+      "job_id": "5bb09d96-059f-4ac9-bafc-e8b0ba2a7ca7",
+      "url": "https://load-test-065.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:12.235477",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-066",
+      "job_id": "2b846aad-a3df-4bdd-901f-65a025cdc8db",
+      "url": "https://load-test-066.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:12.922758",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-067",
+      "job_id": "90ab0400-08bf-4cc4-8511-d3730bf0e6d8",
+      "url": "https://load-test-067.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:13.653491",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-068",
+      "job_id": "87d55e8d-d8a1-44be-aebc-f97caf0cd123",
+      "url": "https://load-test-068.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:14.355326",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-069",
+      "job_id": "03bd208d-eda8-4fc8-b7c3-ff67ac3716a4",
+      "url": "https://load-test-069.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:15.009838",
+      "elapsed_seconds": 0.45,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-070",
+      "job_id": "67593a4f-1bde-4480-a52f-26f721f74ad7",
+      "url": "https://load-test-070.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:15.717255",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-071",
+      "job_id": "952cf668-1caa-4646-b31d-ca01e69b423f",
+      "url": "https://load-test-071.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:16.440645",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-072",
+      "job_id": "f86e6734-55e1-42a1-83ca-fc0e3b9d6686",
+      "url": "https://load-test-072.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:17.155183",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-073",
+      "job_id": "41d5a51b-7f87-47c4-94aa-f2cc33f904b8",
+      "url": "https://load-test-073.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:17.866666",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-074",
+      "job_id": "5292d25e-e30c-4aae-8faa-77ab6eede9d1",
+      "url": "https://load-test-074.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:18.556771",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-075",
+      "job_id": "bbb114f1-8acb-489e-9ce3-32dd75e3948a",
+      "url": "https://load-test-075.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:19.209849",
+      "elapsed_seconds": 0.45,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-076",
+      "job_id": "1d5159a6-79cb-444c-b0a2-ecefaaefadaa",
+      "url": "https://load-test-076.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:19.910991",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-077",
+      "job_id": "dc32a9e1-41f3-40a6-a407-938df36108e0",
+      "url": "https://load-test-077.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:20.589831",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-078",
+      "job_id": "eab1aaaf-3a1b-4e81-8165-8e3b5d1df261",
+      "url": "https://load-test-078.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:21.302855",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-079",
+      "job_id": "96982819-addb-40ba-8eaf-1bd39c4b1a87",
+      "url": "https://load-test-079.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:22.019256",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-080",
+      "job_id": "018a417f-f254-41c0-8c8b-d9d6dae7743b",
+      "url": "https://load-test-080.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:22.759484",
+      "elapsed_seconds": 0.54,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-081",
+      "job_id": "3ff2b898-baa1-4a07-8614-356732f379f8",
+      "url": "https://load-test-081.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:23.451352",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-082",
+      "job_id": "207446a0-ef08-4982-a1c4-4524538129d7",
+      "url": "https://load-test-082.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:24.140873",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-083",
+      "job_id": "35f7441f-0f90-4207-812d-07b4346c1fc4",
+      "url": "https://load-test-083.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:24.847729",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-084",
+      "job_id": "fb5bc632-2f40-4db9-904b-2b2db604a632",
+      "url": "https://load-test-084.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:25.523188",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-085",
+      "job_id": "144e5283-80bc-4fe1-a3ab-6ee6c9615197",
+      "url": "https://load-test-085.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:26.242503",
+      "elapsed_seconds": 0.52,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-086",
+      "job_id": "2871ed5c-3f83-4862-bd15-e9c6ab7e326b",
+      "url": "https://load-test-086.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:26.939261",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-087",
+      "job_id": "e324b3a5-2703-4212-8083-c81858bbee7b",
+      "url": "https://load-test-087.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:27.640671",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-088",
+      "job_id": "4458a1f6-4c9d-4b43-abd2-881bef71e6c9",
+      "url": "https://load-test-088.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:28.317348",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-089",
+      "job_id": "513e5336-e975-4e89-abc4-e3b569f61540",
+      "url": "https://load-test-089.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:28.997328",
+      "elapsed_seconds": 0.48,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-090",
+      "job_id": "2bd32610-0fcc-4940-89a1-3346c5574cfb",
+      "url": "https://load-test-090.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:29.711472",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-091",
+      "job_id": "c7a0e987-898b-4c10-850b-c03dcc00366d",
+      "url": "https://load-test-091.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:30.415660",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-092",
+      "job_id": "dc3dc137-d3d6-4731-8470-09e916e5aa15",
+      "url": "https://load-test-092.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:31.073559",
+      "elapsed_seconds": 0.46,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-093",
+      "job_id": "7ea0f7f2-c770-42c3-8180-b14c411490eb",
+      "url": "https://load-test-093.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:31.786680",
+      "elapsed_seconds": 0.51,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-094",
+      "job_id": "42f8270a-7ee3-4f5e-95b5-9b5726aad330",
+      "url": "https://load-test-094.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:32.476745",
+      "elapsed_seconds": 0.49,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-095",
+      "job_id": "27a7c39d-519d-4a8e-b340-15ab1f65140f",
+      "url": "https://load-test-095.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:33.180780",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-096",
+      "job_id": "686d956d-dba5-4838-bc21-2352e95a5054",
+      "url": "https://load-test-096.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:33.853586",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-097",
+      "job_id": "07663c2d-6dbc-4bc8-b71a-795997bb4d3c",
+      "url": "https://load-test-097.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:34.508727",
+      "elapsed_seconds": 0.45,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-098",
+      "job_id": "8041f2bb-7c85-4fcd-bf7f-206bbb2eed99",
+      "url": "https://load-test-098.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:35.234157",
+      "elapsed_seconds": 0.53,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-099",
+      "job_id": "4edefb28-465c-4517-9223-640215482eb9",
+      "url": "https://load-test-099.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:35.937334",
+      "elapsed_seconds": 0.5,
+      "progress": 10
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-100",
+      "job_id": "7ee0b8ce-6f25-47c0-8827-f9957572b526",
+      "url": "https://load-test-100.clones.betaweb.ai",
+      "status": "failed",
+      "submitted_at": "2026-02-20T15:12:36.610341",
+      "elapsed_seconds": 0.47,
+      "progress": 10
+    }
+  ],
+  "summary": {
+    "submitted": 100,
+    "completed": 0,
+    "failed": 100,
+    "success_rate": 0.0
+  }
+}
