@@ -23,12 +23,17 @@ service:
 ports:
   web:
     port: 8000
+    targetPort: 8000
     exposedPort: 80
     protocol: TCP
   websecure:
     port: 8443
+    targetPort: 8443
     exposedPort: 443
     protocol: TCP
+    http:
+      tls:
+        enabled: false
 
 providers:
   kubernetesCRD:
@@ -36,7 +41,7 @@ providers:
     allowCrossNamespace: true
     allowExternalNameServices: true
   kubernetesIngress:
-    enabled: false
+    enabled: true
 
 logs:
   general:
@@ -47,3 +52,25 @@ logs:
 additionalArguments:
   - "--api.insecure=true"
   - "--serverstransport.insecureskipverify=true"
+
+ports:
+  web:
+    port: 8000
+    targetPort: 8000
+    exposedPort: 80
+    protocol: TCP
+  websecure:
+    port: 8443
+    targetPort: 8443
+    exposedPort: 443
+    protocol: TCP
+    http:
+      tls:
+        enabled: false
+  traefik:
+    port: 8080
+    targetPort: 8080
+    expose:
+      default: true
+    protocol: TCP
+    exposedPort: 8080

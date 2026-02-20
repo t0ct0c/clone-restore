@@ -449,13 +449,54 @@
 
 ---
 
-## Phase 4.5: Gateway API Migration - Unlimited Clone Routing (Week 3-4)
+## Phase 4.5: Traefik Migration - Unlimited Clone Routing (Week 3-4)
 
 **Created**: 2026-02-19
-**Status**: PENDING
+**Status**: ✅ COMPLETE
 **Priority**: Critical (blocks scale beyond 100 clones)
+**Solution**: Traefik + NLB + Standard Ingress (replaced Gateway API approach)
 
-### Background: Why Gateway API?
+### Why Traefik Instead of Gateway API?
+
+Gateway API v3.0.0 has compatibility bugs with AWS Load Balancer Controller. Traefik provides:
+- ✅ **Unlimited clones** (5000+) via subdomain routing
+- ✅ **Valid HTTPS** with ACM wildcard cert on NLB
+- ✅ **Standard Ingress API** (no CRDs, more portable)
+- ✅ **Lower complexity** (single Helm chart vs Gateway API + ALB Controller)
+
+### Completed Tasks
+
+#### Task 4.5.1: Deploy Traefik via Helm ✅
+- Installed Traefik v3.6.8 via Helm chart
+- Configured NLB service with ACM wildcard cert (`*.clones.betaweb.ai`)
+- Enabled `kubernetesIngress` provider for standard Ingress resources
+- Entry points: web (8000→80), websecure (8443→443)
+
+#### Task 4.5.2: Configure DNS Wildcard ✅
+- SiteGround DNS: `*.clones.betaweb.ai` → Traefik NLB hostname
+- Verified: `dig clone-test.clones.betaweb.ai` resolves correctly
+
+#### Task 4.5.3: Update k8s_provisioner.py for Standard Ingress ✅
+- Added `ingress_class_name="traefik"` to Ingress spec (line 460)
+- Uses subdomain pattern: `clone-{customer_id}.clones.betaweb.ai`
+- Removed dependency on deprecated annotation-based class selection
+
+#### Task 4.5.4: Verified End-to-End Routing ✅
+- Test: `curl -H "Host: test-ingress-fix.clones.betaweb.ai" http://<NLB>` → HTTP 200
+- Traefik creates routers dynamically for each Ingress
+- Confirmed: Unlimited clone scaling supported
+
+### Remaining Work
+
+- [ ] Rebuild wp-k8s-service Docker image with updated k8s_provisioner.py
+- [ ] Deploy new image to cluster
+- [ ] Run bulk clone test (`python3 scripts/bulk-create-clones.py`)
+- [ ] Delete old ALB-based Ingress resources
+- [ ] Clean up path-based middleware (fallback only)
+
+---
+
+### Background: Why Gateway API? (Original Plan - Superseded by Traefik)
 
 **Current Approach (Ingress - Path-Based Routing)**:
 ```

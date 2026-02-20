@@ -1,0 +1,33 @@
+[
+  {
+    "success": false,
+    "clone_id": "bulk-test-001",
+    "error": "500 Server Error: Internal Server Error for url: http://k8s-traefiks-traefik-30437c81e0-7add42ef82721255.elb.us-east-1.amazonaws.com/provision",
+    "elapsed_seconds": 0.49
+  },
+  {
+    "success": false,
+    "clone_id": "bulk-test-002",
+    "error": "500 Server Error: Internal Server Error for url: http://k8s-traefiks-traefik-30437c81e0-7add42ef82721255.elb.us-east-1.amazonaws.com/provision",
+    "elapsed_seconds": 0.5
+  },
+  {
+    "success": false,
+    "clone_id": "bulk-test-003",
+    "error": "500 Server Error: Internal Server Error for url: http://k8s-traefiks-traefik-30437c81e0-7add42ef82721255.elb.us-east-1.amazonaws.com/provision",
+    "elapsed_seconds": 0.47
+  },
+  {
+    "success": false,
+    "clone_id": "bulk-test-004",
+    "error": "500 Server Error: Internal Server Error for url: http://k8s-traefiks-traefik-30437c81e0-7add42ef82721255.elb.us-east-1.amazonaws.com/provision",
+    "elapsed_seconds": 0.47
+  },
+  {
+    "success": true,
+    "clone_id": "bulk-test-005",
+    "url": "https://bulk-test-005.clones.betaweb.ai",
+    "elapsed_seconds": 26.98,
+    "timestamp": "2026-02-20T00:40:23.111511"
+  }
+]

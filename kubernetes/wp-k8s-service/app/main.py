@@ -27,12 +27,16 @@ from .wp_auth import WordPressAuthenticator
 from .wp_plugin import WordPressPluginInstaller
 from .wp_options import WordPressOptionsFetcher
 from .k8s_provisioner import K8sProvisioner
-from .browser_setup import setup_target_with_browser, setup_wordpress_with_browser, create_application_password
+from .browser_setup import (
+    setup_target_with_browser,
+    setup_wordpress_with_browser,
+    create_application_password,
+)
 
 
 def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
     """Build a WordPress REST API URL.
-    
+
     For GET: always use ?rest_route= (works regardless of permalink settings).
     For POST: use /wp-json/ (SiteGround blocks POST to ?rest_route=).
     For clone URLs (contain /clone-): always use ?rest_route= (plain permalinks).
@@ -45,10 +49,11 @@ def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
         return f"{base}/wp-json{route}"
 
 
-def _post_rest_api(base_url: str, route: str, headers: dict, timeout: int,
-                   json_data: dict = None) -> requests.Response:
+def _post_rest_api(
+    base_url: str, route: str, headers: dict, timeout: int, json_data: dict = None
+) -> requests.Response:
     """POST to a WordPress REST API endpoint with automatic fallback.
-    
+
     Tries in order:
     1. POST /wp-json/ (standard, works when rewrite rules are intact)
     2. POST ?rest_route= (works on clones with plain permalinks)
@@ -57,27 +62,31 @@ def _post_rest_api(base_url: str, route: str, headers: dict, timeout: int,
     """
     base = base_url.rstrip("/")
     primary_url = _rest_url(base, route, "POST")
-    
+
     resp = requests.post(primary_url, headers=headers, json=json_data, timeout=timeout)
-    
+
     # Check if response is HTML instead of JSON (nginx/siteground interception)
-    content_type = resp.headers.get('content-type', '')
-    is_html = 'text/html' in content_type
-    
+    content_type = resp.headers.get("content-type", "")
+    is_html = "text/html" in content_type
+
     # If primary failed with 404 or returned HTML, try POST ?rest_route=
     if (resp.status_code == 404 or is_html) and "/wp-json/" in primary_url:
         fallback_url = f"{base}/?rest_route={route}"
-        logger.info(f"POST to {primary_url} got {resp.status_code}{' (HTML)' if is_html else ''}, trying POST fallback: {fallback_url}")
-        resp = requests.post(fallback_url, headers=headers, json=json_data, timeout=timeout)
-        content_type = resp.headers.get('content-type', '')
-        is_html = 'text/html' in content_type
-    
+        logger.info(
+            f"POST to {primary_url} got {resp.status_code}{' (HTML)' if is_html else ''}, trying POST fallback: {fallback_url}"
+        )
+        resp = requests.post(
+            fallback_url, headers=headers, json=json_data, timeout=timeout
+        )
+        content_type = resp.headers.get("content-type", "")
+        is_html = "text/html" in content_type
+
     # If POST ?rest_route= also failed, try GET ?rest_route= (SiteGround workaround)
     if resp.status_code == 404 or is_html:
         get_url = f"{base}/?rest_route={route}"
         logger.info(f"POST failed, trying GET fallback: {get_url}")
         resp = requests.get(get_url, headers=headers, timeout=timeout)
-    
+
     return resp
 
 
@@ -105,7 +114,9 @@ tracer = trace.get_tracer(__name__)
 
 # Use OpenTelemetry collector endpoint from environment
 # In Kubernetes, this would typically be a service endpoint
-DEFAULT_OTEL_ENDPOINT = "http://opentelemetry-collector.observability.svc.cluster.local:4318/v1/traces"
+DEFAULT_OTEL_ENDPOINT = (
+    "http://opentelemetry-collector.observability.svc.cluster.local:4318/v1/traces"
+)
 otlp_exporter = OTLPSpanExporter(
     endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", DEFAULT_OTEL_ENDPOINT)
 )
@@ -504,7 +515,8 @@ def perform_clone(
         # Step 1: Export from source
         logger.info("Exporting from source...")
         export_response = _post_rest_api(
-            source_url, "/custom-migrator/v1/export",
+            source_url,
+            "/custom-migrator/v1/export",
             headers={"X-Migrator-Key": source_api_key},
             timeout=TIMEOUT,
         )
@@ -539,7 +551,8 @@ def perform_clone(
             import_payload["admin_password"] = admin_password
 
         import_response = _post_rest_api(
-            target_url, "/custom-migrator/v1/import",
+            target_url,
+            "/custom-migrator/v1/import",
             headers={
                 "X-Migrator-Key": target_api_key,
                 "Content-Type": "application/json",
@@ -605,7 +618,8 @@ def perform_restore(
         logger.info("Exporting from source...")
 
         export_response = _post_rest_api(
-            source_url, "/custom-migrator/v1/export",
+            source_url,
+            "/custom-migrator/v1/export",
             headers={"X-Migrator-Key": source_api_key},
             timeout=TIMEOUT,
         )
@@ -651,7 +665,8 @@ def perform_restore(
             import_payload["admin_password"] = admin_password
 
         import_response = _post_rest_api(
-            target_url, "/custom-migrator/v1/import",
+            target_url,
+            "/custom-migrator/v1/import",
             headers={
                 "X-Migrator-Key": target_api_key,
                 "Content-Type": "application/json",
@@ -763,16 +778,16 @@ async def setup_endpoint(request: SetupRequest):
 async def create_app_password_endpoint(request: CreateAppPasswordRequest):
     """
     Create WordPress Application Password via browser automation.
-    
+
     This standalone utility endpoint generates an Application Password for
     a WordPress site, enabling REST API authentication without manual
     wp-admin access.
-    
+
     Requirements:
     - WordPress 5.6+ (Application Passwords feature)
     - User must have permission to create application passwords
     - Application passwords must be enabled on the site
-    
+
     Returns the generated password that can be used for REST API authentication.
     """
     logger.info("🔐 ========================================")
@@ -781,44 +796,49 @@ async def create_app_password_endpoint(request: CreateAppPasswordRequest):
     logger.info(f"🔐 [CREATE-APP-PASSWORD] Username: {request.username}")
     logger.info(f"🔐 [CREATE-APP-PASSWORD] App name: {request.app_name}")
     logger.info("🔐 ========================================")
-    
+
     result = await create_application_password(
-        str(request.url),
-        request.username,
-        request.password,
-        request.app_name
+        str(request.url), request.username, request.password, request.app_name
     )
-    
-    if not result.get('success'):
+
+    if not result.get("success"):
         # Map error codes to appropriate HTTP status codes
-        error_code = result.get('error_code', 'UNKNOWN_ERROR')
-        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ FAILED with error code: {error_code}")
-        logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ Error message: {result.get('message')}")
-        
+        error_code = result.get("error_code", "UNKNOWN_ERROR")
+        logger.error(
+            f"🔐 [CREATE-APP-PASSWORD] ❌ FAILED with error code: {error_code}"
+        )
+        logger.error(
+            f"🔐 [CREATE-APP-PASSWORD] ❌ Error message: {result.get('message')}"
+        )
+
         status_code = {
-            'LOGIN_FAILED': status.HTTP_401_UNAUTHORIZED,
-            'LOGIN_ERROR': status.HTTP_401_UNAUTHORIZED,
-            'SESSION_LOST': status.HTTP_401_UNAUTHORIZED,
-            'APP_PASSWORD_NOT_SUPPORTED': status.HTTP_400_BAD_REQUEST,
-            'APP_PASSWORD_DISABLED': status.HTTP_400_BAD_REQUEST,
-            'PERMISSION_DENIED': status.HTTP_403_FORBIDDEN,
-            'BROWSER_TIMEOUT': status.HTTP_504_GATEWAY_TIMEOUT,
+            "LOGIN_FAILED": status.HTTP_401_UNAUTHORIZED,
+            "LOGIN_ERROR": status.HTTP_401_UNAUTHORIZED,
+            "SESSION_LOST": status.HTTP_401_UNAUTHORIZED,
+            "APP_PASSWORD_NOT_SUPPORTED": status.HTTP_400_BAD_REQUEST,
+            "APP_PASSWORD_DISABLED": status.HTTP_400_BAD_REQUEST,
+            "PERMISSION_DENIED": status.HTTP_403_FORBIDDEN,
+            "BROWSER_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
         }.get(error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
-        
+
         logger.error(f"🔐 [CREATE-APP-PASSWORD] ❌ HTTP Status: {status_code}")
         logger.info("🔐 ========================================")
-        
+
         raise HTTPException(
             status_code=status_code,
-            detail=result.get('message', 'Application password creation failed')
+            detail=result.get("message", "Application password creation failed"),
         )
-    
+
     logger.info("🔐 [CREATE-APP-PASSWORD] ✅ SUCCESS")
     logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ App name: {result.get('app_name')}")
-    password_preview = result.get('application_password', '')[:8] + '...' if result.get('application_password') else 'N/A'
+    password_preview = (
+        result.get("application_password", "")[:8] + "..."
+        if result.get("application_password")
+        else "N/A"
+    )
     logger.info(f"🔐 [CREATE-APP-PASSWORD] ✅ Password: {password_preview}")
     logger.info("🔐 ========================================")
-    
+
     return CreateAppPasswordResponse(**result)
 
 
@@ -837,7 +857,7 @@ async def clone_endpoint(request: CloneRequest):
     if request.target:
         logger.info(f"📋 [CLONE-START] Target: {request.target.url}")
     logger.info("📋 ========================================")
-    
+
     provisioned_target_info = None
     target_url = None
     target_username = None
@@ -861,14 +881,18 @@ async def clone_endpoint(request: CloneRequest):
     # Determine target: use provided or auto-provision
     if request.target is None:
         if not request.auto_provision:
-            logger.error("📋 [CLONE-TARGET-SETUP] ❌ No target provided and auto_provision disabled")
+            logger.error(
+                "📋 [CLONE-TARGET-SETUP] ❌ No target provided and auto_provision disabled"
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Target credentials required when auto_provision is False",
             )
 
         # Auto-provision Kubernetes target
-        logger.info("📋 [CLONE-TARGET-PROVISION] Auto-provisioning Kubernetes target...")
+        logger.info(
+            "📋 [CLONE-TARGET-PROVISION] Auto-provisioning Kubernetes target..."
+        )
         provisioner = K8sProvisioner()
 
         # Generate unique customer_id from timestamp
@@ -897,7 +921,7 @@ async def clone_endpoint(request: CloneRequest):
             "expires_at": provision_result.get("expires_at"),
             "ttl_minutes": request.ttl_minutes,
             "customer_id": customer_id,
-            "namespace": provision_result.get("namespace")
+            "namespace": provision_result.get("namespace"),
         }
 
         logger.info(f"Target provisioned: {public_url}")
@@ -919,13 +943,17 @@ async def clone_endpoint(request: CloneRequest):
                 "message": "Direct setup successful",
             }
         else:
-            logger.info("📋 [CLONE-TARGET-SETUP] Direct API key missing, using browser setup")
+            logger.info(
+                "📋 [CLONE-TARGET-SETUP] Direct API key missing, using browser setup"
+            )
             target_result = await setup_target_with_browser(
                 target_url, target_username, target_password
             )
     else:
         # User-provided target - use HTTP-based setup
-        logger.info("📋 [CLONE-TARGET-SETUP] Using HTTP-based setup for user-provided target")
+        logger.info(
+            "📋 [CLONE-TARGET-SETUP] Using HTTP-based setup for user-provided target"
+        )
         target_result = await setup_wordpress(
             target_url, target_username, target_password, role="target"
         )
@@ -940,7 +968,7 @@ async def clone_endpoint(request: CloneRequest):
     logger.info("📋 [CLONE-EXECUTE] Starting clone operation")
     logger.info(f"📋 [CLONE-EXECUTE] Source URL: {request.source.url}")
     logger.info(f"📋 [CLONE-EXECUTE] Target URL: {target_url}")
-    
+
     clone_result = perform_clone(
         str(request.source.url),
         source_result["api_key"],
@@ -970,13 +998,11 @@ async def clone_endpoint(request: CloneRequest):
         # Set API key to migration-master-key so restore endpoint can use a known key
         logger.info("Setting clone API key to migration-master-key...")
         provisioner.run_wp_cli_in_container(
-            customer_id,
-            "option update custom_migrator_api_key migration-master-key"
+            customer_id, "option update custom_migrator_api_key migration-master-key"
         )
         # Also enable import on the clone
         provisioner.run_wp_cli_in_container(
-            customer_id,
-            "option update custom_migrator_allow_import 1"
+            customer_id, "option update custom_migrator_allow_import 1"
         )
 
     # Force-update WordPress URLs in Kubernetes pod
@@ -1029,9 +1055,7 @@ async def restore_endpoint(request: RestoreRequest):
 
         # Pre-check: verify clone is healthy and find working API key
         logger.info("Verifying clone source is healthy...")
-        health_url = (
-            f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status"
-        )
+        health_url = f"{source_url.rstrip('/')}/?rest_route=/custom-migrator/v1/status"
 
         for candidate_key in candidate_keys:
             try:
@@ -1043,7 +1067,9 @@ async def restore_endpoint(request: RestoreRequest):
                     logger.info(f"Clone API key found: {candidate_key[:10]}...")
                     break
                 elif health_resp.status_code == 403:
-                    logger.info(f"Key '{candidate_key[:10]}...' rejected (403), trying next...")
+                    logger.info(
+                        f"Key '{candidate_key[:10]}...' rejected (403), trying next..."
+                    )
                 else:
                     resp_text = health_resp.text
                     if "Error establishing a database connection" in resp_text:
@@ -1068,9 +1094,14 @@ async def restore_endpoint(request: RestoreRequest):
         if source_api_key is None:
             # None of the candidate keys worked - fall back to browser automation
             # to retrieve the actual API key from the clone's settings page
-            logger.info("No candidate key worked for clone, falling back to browser automation...")
+            logger.info(
+                "No candidate key worked for clone, falling back to browser automation..."
+            )
             source_result = await setup_wordpress_with_browser(
-                source_url, request.source.username, request.source.password, role="source"
+                source_url,
+                request.source.username,
+                request.source.password,
+                role="source",
             )
             if not source_result.get("success"):
                 raise HTTPException(
@@ -1118,7 +1149,7 @@ async def restore_endpoint(request: RestoreRequest):
     logger.info(f"🔄 [RESTORE-EXECUTE] Target URL: {request.target.url}")
     logger.info(f"🔄 [RESTORE-EXECUTE] Preserve plugins: {request.preserve_plugins}")
     logger.info(f"🔄 [RESTORE-EXECUTE] Preserve themes: {request.preserve_themes}")
-    
+
     restore_result = perform_restore(
         source_url,
         source_api_key,
@@ -1151,9 +1182,9 @@ async def restore_endpoint(request: RestoreRequest):
 @app.post("/provision", response_model=ProvisionResponse)
 async def provision_endpoint(request: ProvisionRequest):
     """
-    Provision ephemeral WordPress target on AWS EC2
+    Provision ephemeral WordPress target on Kubernetes with TTL
     """
-    provisioner = EC2Provisioner()
+    provisioner = K8sProvisioner()
     result = provisioner.provision_target(
         customer_id=request.customer_id, ttl_minutes=request.ttl_minutes
     )

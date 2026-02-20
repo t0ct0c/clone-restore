@@ -1,0 +1,44 @@
+tempo:
+  storage:
+    trace:
+      backend: local
+      wal:
+        path: /var/tempo/wal
+      local:
+        path: /var/tempo/blocks
+
+  ingester:
+    max_block_duration: 5m
+
+  compactor:
+    compaction:
+      block_retention: 168h
+
+  metricsGenerator:
+    enabled: true
+    remote_write_url: http://prometheus.observability.svc.cluster.local:9090/api/v1/write
+
+  gateway:
+    enabled: true
+    ingress:
+      enabled: false
+
+  serviceMonitor:
+    enabled: true
+    namespace: observability
+
+test:
+  enabled: false
+
+persistence:
+  enabled: true
+  size: 5Gi
+  storageClass: gp3
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 256Mi

@@ -34,6 +34,15 @@
       "type": "local",
       "command": ["uvx", "awslabs.terraform-mcp-server@latest"],
       "enabled": true
+    },
+    "traefik": {
+      "type": "local",
+      "command": ["uv", "run", "--directory", "/tmp/traefik-mcp", "traefik-mcp"],
+      "enabled": true,
+      "environment": {
+        "TRAEFIK_API_URL": "http://traefik.traefik-system.svc.cluster.local:8080",
+        "MCP_LOG_LEVEL": "INFO"
+      }
     }
   }
 }

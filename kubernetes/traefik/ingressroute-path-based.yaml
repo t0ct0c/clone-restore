@@ -1,0 +1,21 @@
+# Catch-all IngressRoute for path-based clones (fallback until DNS wildcard)
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: clones-path-based
+  namespace: wordpress-staging
+  annotations:
+    traefik.ingress.kubernetes.io/router.priority: "10"
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`clones.betaweb.ai`) && PathPrefix(`/clone-`)
+      kind: Rule
+      middlewares:
+        - name: strip-clone-prefix
+      services:
+        - name: wp-k8s-service
+          port: 80
+          passHostHeader: true

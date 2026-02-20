@@ -133,18 +133,16 @@ class K8sProvisioner:
                     "message": "Failed to create Kubernetes Service",
                 }
 
-            # 7. Create Traefik IngressRoute for subdomain routing
-            ingressroute_created = self._create_ingressroute(customer_id)
+            # 7. Create Kubernetes Ingress for Traefik subdomain routing
+            ingress_created = self._create_ingress(customer_id)
 
-            if not ingressroute_created:
-                logger.warning(
-                    "IngressRoute creation failed, clone may not be accessible"
-                )
+            if not ingress_created:
+                logger.warning("Ingress creation failed, clone may not be accessible")
 
             # 7b. Wait for WordPress to be configured and responding
             logger.info(f"Waiting for WordPress to be ready in {customer_id}...")
             wp_ready = self._wait_for_wordpress_ready(customer_id, timeout=120)
-            
+
             if not wp_ready:
                 logger.warning(f"WordPress not ready after 120s, clone may fail")
 
@@ -356,7 +354,7 @@ class K8sProvisioner:
                                     ),
                                     readiness_probe=client.V1Probe(
                                         http_get=client.V1HTTPGetAction(
-                                            path="/wp-json/custom-migrator/v1/status",
+                                            path="/",
                                             port=80,
                                         ),
                                         initial_delay_seconds=20,
@@ -439,42 +437,58 @@ class K8sProvisioner:
             logger.error(f"Failed to create Service: {e}")
             return False
 
-    def _create_ingressroute(self, customer_id: str) -> bool:
-        """Create Traefik IngressRoute for subdomain routing (unlimited clones)"""
+    def _create_ingress(self, customer_id: str) -> bool:
+        """Create standard Kubernetes Ingress for Traefik subdomain routing"""
         try:
-            # Subdomain-based routing: clone-{id}.clones.betaweb.ai
+            from kubernetes.client import V1Ingress, V1ObjectMeta, V1IngressSpec
+            from kubernetes.client import V1IngressRule, V1HTTPIngressRuleValue
+            from kubernetes.client import V1HTTPIngressPath, V1IngressBackend
+            from kubernetes.client import V1IngressServiceBackend, V1ServiceBackendPort
+
             subdomain = f"{customer_id}.clones.betaweb.ai"
 
-            ingressroute = {
-                "apiVersion": "traefik.io/v1alpha1",
-                "kind": "IngressRoute",
-                "metadata": {
-                    "name": customer_id,
-                    "namespace": self.namespace,
-                    "labels": {"app": "wordpress-clone", "clone-id": customer_id},
-                },
-                "spec": {
-                    "entryPoints": ["web", "websecure"],
-                    "routes": [
-                        {
-                            "match": f"Host(`{subdomain}`)",
-                            "kind": "Rule",
-                            "services": [{"name": customer_id, "port": 80}],
-                        }
+            ingress = V1Ingress(
+                metadata=V1ObjectMeta(
+                    name=customer_id,
+                    namespace=self.namespace,
+                    labels={"app": "wordpress-clone", "clone-id": customer_id},
+                    annotations={
+                        "traefik.ingress.kubernetes.io/router.entrypoints": "web,websecure",
+                    },
+                ),
+                spec=V1IngressSpec(
+                    ingress_class_name="traefik",
+                    rules=[
+                        V1IngressRule(
+                            host=subdomain,
+                            http=V1HTTPIngressRuleValue(
+                                paths=[
+                                    V1HTTPIngressPath(
+                                        path="/",
+                                        path_type="Prefix",
+                                        backend=V1IngressBackend(
+                                            service=V1IngressServiceBackend(
+                                                name=customer_id,
+                                                port=V1ServiceBackendPort(number=80),
+                                            )
+                                        ),
+                                    )
+                                ]
+                            ),
+                        )
                     ],
-                },
-            }
+                ),
+            )
 
-            # Use dynamic client for CRD
-            self.dynamic_client.resources.get(
-                api_version="traefik.io/v1alpha1", kind="IngressRoute"
-            ).create(namespace=self.namespace, body=ingressroute)
+            self.networking_api.create_namespaced_ingress(
+                namespace=self.namespace, body=ingress
+            )
 
-            logger.info(f"IngressRoute created: {customer_id} (subdomain: {subdomain})")
+            logger.info(f"Ingress created: {customer_id} (subdomain: {subdomain})")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to create IngressRoute: {e}")
+            logger.error(f"Failed to create Ingress: {e}")
             return False
 
     def _cleanup_secret(self, customer_id: str):
@@ -604,19 +618,22 @@ class K8sProvisioner:
         """Wait for WordPress to be configured and responding"""
         try:
             import requests
+
             start_time = time.time()
             service_url = f"http://{customer_id}.{self.namespace}.svc.cluster.local"
-            
+
             while time.time() - start_time < timeout:
                 try:
-                    resp = requests.get(f"{service_url}/wp-json/custom-migrator/v1/status", timeout=5)
+                    resp = requests.get(
+                        f"{service_url}/wp-json/custom-migrator/v1/status", timeout=5
+                    )
                     if resp.status_code == 200:
                         logger.info(f"WordPress ready: {customer_id}")
                         return True
                 except:
                     pass
                 time.sleep(3)
-            
+
             logger.warning(f"WordPress not ready after {timeout}s")
             return False
         except Exception as e:
