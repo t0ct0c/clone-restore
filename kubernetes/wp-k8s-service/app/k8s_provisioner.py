@@ -1,7 +1,8 @@
 """
 Kubernetes Provisioning Module
 
-Handles ephemeral WordPress clone provisioning on Kubernetes using Jobs with TTL.
+Handles ephemeral WordPress clone provisioning on Kubernetes using Deployments with TTL labels.
+Cleanup is handled by a CronJob that deletes expired clones every 5 minutes.
 """
 
 from loguru import logger
@@ -16,7 +17,7 @@ import os
 
 
 class K8sProvisioner:
-    """Provision ephemeral WordPress clones on Kubernetes with Jobs + TTL"""
+    """Provision ephemeral WordPress clones on Kubernetes with Deployments + TTL labels"""
 
     def __init__(self, namespace: str = "wordpress-staging"):
         """
@@ -35,6 +36,7 @@ class K8sProvisioner:
 
         self.core_api = client.CoreV1Api()
         self.batch_api = client.BatchV1Api()
+        self.apps_api = client.AppsV1Api()
         self.networking_api = client.NetworkingV1Api()
         self.dynamic_client = dynamic.DynamicClient(client.ApiClient())
         self.namespace = namespace
@@ -102,17 +104,17 @@ class K8sProvisioner:
                         "message": "Failed to create database on shared RDS",
                     }
 
-            # 4. Create Job with TTL for WordPress container
-            job_created = self._create_job(
+            # 4. Create Deployment with TTL label for WordPress container
+            deployment_created = self._create_deployment(
                 customer_id=customer_id, ttl_minutes=ttl_minutes
             )
 
-            if not job_created:
+            if not deployment_created:
                 self._cleanup_secret(customer_id)
                 return {
                     "success": False,
-                    "error_code": "JOB_CREATE_FAILED",
-                    "message": "Failed to create Kubernetes Job",
+                    "error_code": "DEPLOYMENT_CREATE_FAILED",
+                    "message": "Failed to create Kubernetes Deployment",
                 }
 
             # 5. Wait for pod to be running
@@ -125,7 +127,7 @@ class K8sProvisioner:
             service_created = self._create_service(customer_id)
 
             if not service_created:
-                self._cleanup_job(customer_id)
+                self._cleanup_deployment(customer_id)
                 self._cleanup_secret(customer_id)
                 return {
                     "success": False,
@@ -211,6 +213,9 @@ class K8sProvisioner:
             return True
 
         except ApiException as e:
+            if e.status == 409:
+                logger.warning(f"Secret already exists: {customer_id}-credentials")
+                return True
             logger.error(f"Failed to create Secret: {e}")
             return False
 
@@ -253,9 +258,11 @@ class K8sProvisioner:
             logger.error(f"Failed to create database on shared RDS: {e}")
             return False
 
-    def _create_job(self, customer_id: str, ttl_minutes: int) -> bool:
-        """Create Kubernetes Job with TTL for auto-cleanup"""
+    def _create_deployment(self, customer_id: str, ttl_minutes: int) -> bool:
+        """Create Kubernetes Deployment with TTL label for auto-cleanup"""
         try:
+            from datetime import datetime, timedelta
+
             # Sanitize customer_id for database name
             db_name = f"wp_{customer_id.replace('-', '_')}"
             db_user = db_name
@@ -266,26 +273,36 @@ class K8sProvisioner:
             else:
                 db_host = f"mysql.{self.namespace}.svc.cluster.local"
 
-            # Job spec with TTL
-            job = client.V1Job(
+            # Calculate TTL expiration time
+            ttl_expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+            ttl_label = ttl_expires_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Deployment spec with TTL label
+            deployment = client.V1Deployment(
                 metadata=client.V1ObjectMeta(
                     name=customer_id,
                     namespace=self.namespace,
-                    labels={"app": "wordpress-clone", "clone-id": customer_id},
+                    labels={
+                        "app": "wordpress-clone",
+                        "clone-id": customer_id,
+                        "ttl-expires-at": ttl_label,
+                    },
                 ),
-                spec=client.V1JobSpec(
-                    # TTL for automatic cleanup after completion
-                    ttl_seconds_after_finished=ttl_minutes * 60,
-                    # Job should complete after starting (keeps pod running)
-                    completions=1,
-                    parallelism=1,
-                    backoff_limit=0,  # Don't retry on failure
+                spec=client.V1DeploymentSpec(
+                    replicas=1,
+                    selector=client.V1LabelSelector(
+                        match_labels={"clone-id": customer_id}
+                    ),
                     template=client.V1PodTemplateSpec(
                         metadata=client.V1ObjectMeta(
-                            labels={"app": "wordpress-clone", "clone-id": customer_id}
+                            labels={
+                                "app": "wordpress-clone",
+                                "clone-id": customer_id,
+                                "ttl-expires-at": ttl_label,
+                            }
                         ),
                         spec=client.V1PodSpec(
-                            restart_policy="Never",
+                            restart_policy="Always",
                             containers=[
                                 client.V1Container(
                                     name="wordpress",
@@ -369,13 +386,20 @@ class K8sProvisioner:
                 ),
             )
 
-            self.batch_api.create_namespaced_job(namespace=self.namespace, body=job)
+            self.apps_api.create_namespaced_deployment(
+                namespace=self.namespace, body=deployment
+            )
 
-            logger.info(f"Job created: {customer_id} (TTL: {ttl_minutes}min)")
+            logger.info(
+                f"Deployment created: {customer_id} (TTL: {ttl_minutes}min, expires: {ttl_label})"
+            )
             return True
 
         except ApiException as e:
-            logger.error(f"Failed to create Job: {e}")
+            if e.status == 409:
+                logger.warning(f"Deployment already exists: {customer_id}")
+                return True
+            logger.error(f"Failed to create Deployment: {e}")
             return False
 
     def _wait_for_pod_ready(self, customer_id: str, timeout: int = 180) -> bool:
@@ -434,6 +458,9 @@ class K8sProvisioner:
             return True
 
         except ApiException as e:
+            if e.status == 409:
+                logger.warning(f"Service already exists: {customer_id}")
+                return True
             logger.error(f"Failed to create Service: {e}")
             return False
 
@@ -487,7 +514,10 @@ class K8sProvisioner:
             logger.info(f"Ingress created: {customer_id} (subdomain: {subdomain})")
             return True
 
-        except Exception as e:
+        except ApiException as e:
+            if e.status == 409:
+                logger.warning(f"Ingress already exists: {customer_id}")
+                return True
             logger.error(f"Failed to create Ingress: {e}")
             return False
 
@@ -501,15 +531,15 @@ class K8sProvisioner:
         except ApiException:
             pass
 
-    def _cleanup_job(self, customer_id: str):
-        """Delete Job (and its pods)"""
+    def _cleanup_deployment(self, customer_id: str):
+        """Delete Deployment (and its pods)"""
         try:
-            self.batch_api.delete_namespaced_job(
+            self.apps_api.delete_namespaced_deployment(
                 name=customer_id,
                 namespace=self.namespace,
                 propagation_policy="Foreground",
             )
-            logger.info(f"Deleted Job: {customer_id}")
+            logger.info(f"Deleted Deployment: {customer_id}")
         except ApiException:
             pass
 

@@ -1,0 +1,121 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: clone-ttl-cleaner
+  namespace: wordpress-staging
+  labels:
+    app: clone-cleaner
+spec:
+  # Run every 5 minutes to check for expired clones
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: clone-cleaner
+          restartPolicy: OnFailure
+          containers:
+          - name: cleaner
+            image: bitnami/kubectl:1.35.0
+            command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Starting TTL cleanup at $(date)"
+              
+              # Get current time in UTC
+              NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+              echo "Current time: $NOW"
+              
+              # Find all deployments with ttl-expires-at label
+              DEPLOYMENTS=$(kubectl get deployments -n wordpress-staging \
+                -l ttl-expires-at \
+                -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.labels.ttl-expires-at}{"\n"}{end}')
+              
+              DELETED_COUNT=0
+              
+              while IFS=' ' read -r NAME TTL; do
+                if [ -z "$NAME" ]; then
+                  continue
+                fi
+                
+                echo "Checking deployment: $NAME (TTL: $TTL)"
+                
+                # Compare timestamps (string comparison works for ISO 8601 format)
+                if [[ "$TTL" < "$NOW" ]]; then
+                  echo "  → EXPIRED! Deleting deployment: $NAME"
+                  
+                  # Delete deployment
+                  kubectl delete deployment -n wordpress-staging "$NAME" --ignore-not-found=true
+                  
+                  # Delete associated service
+                  kubectl delete service -n wordpress-staging "$NAME" --ignore-not-found=true
+                  
+                  # Delete associated ingress
+                  kubectl delete ingress -n wordpress-staging "$NAME" --ignore-not-found=true
+                  
+                  # Delete associated secret
+                  kubectl delete secret -n wordpress-staging "${NAME}-credentials" --ignore-not-found=true
+                  
+                  echo "  → Deleted all resources for: $NAME"
+                  DELETED_COUNT=$((DELETED_COUNT + 1))
+                else
+                  echo "  → Still valid (expires in $(( ($(date -d "$TTL" +%s) - $(date -d "$NOW" +%s)) / 60 )) minutes)"
+                fi
+              done <<< "$DEPLOYMENTS"
+              
+              echo ""
+              echo "Cleanup complete at $(date)"
+              echo "Total deployments deleted: $DELETED_COUNT"
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: clone-cleaner
+  namespace: wordpress-staging
+  labels:
+    app: clone-cleaner
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: clone-cleaner
+  namespace: wordpress-staging
+  labels:
+    app: clone-cleaner
+rules:
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: [""]
+  resources: ["services", "secrets"]
+  verbs: ["get", "list", "delete"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: clone-cleaner
+  namespace: wordpress-staging
+  labels:
+    app: clone-cleaner
+subjects:
+- kind: ServiceAccount
+  name: clone-cleaner
+  namespace: wordpress-staging
+roleRef:
+  kind: Role
+  name: clone-cleaner
+  apiGroup: rbac.authorization.k8s.io

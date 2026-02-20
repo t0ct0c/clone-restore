@@ -15,25 +15,25 @@ tempo:
       block_retention: 168h
 
   metricsGenerator:
-    enabled: true
+    enabled: false
     remote_write_url: http://prometheus.observability.svc.cluster.local:9090/api/v1/write
 
   gateway:
-    enabled: true
+    enabled: false
     ingress:
       enabled: false
 
   serviceMonitor:
-    enabled: true
+    enabled: false
     namespace: observability
 
 test:
   enabled: false
 
 persistence:
-  enabled: true
+  enabled: false
   size: 5Gi
-  storageClass: gp3
+  storageClassName: gp2
 
 resources:
   limits:

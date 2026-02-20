@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wordpress-staging
+  labels:
+    name: wordpress-staging
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: staging-quota
+  namespace: wordpress-staging
+spec:
+  hard:
+    # Support ~100 concurrent WordPress clones
+    # Each clone: 500m CPU / 1Gi memory
+    # 100 clones = 50 CPU / 100Gi
+    # Plus 20 workers = 5 CPU / 10Gi
+    # Plus overhead and headroom
+    limits.cpu: "100"
+    limits.memory: 200Gi
+    # Support 100 clones + 20 workers + system pods
+    pods: "150"
+    # Requests are typically 50% of limits
+    requests.cpu: "50"
+    requests.memory: 100Gi

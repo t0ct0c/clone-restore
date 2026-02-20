@@ -5,9 +5,7 @@ deploymentStrategy:
   type: Recreate
 
 persistence:
-  enabled: true
-  size: 1Gi
-  storageClass: gp3
+  enabled: false
 
 service:
   type: ClusterIP
@@ -31,27 +29,6 @@ datasources:
         isDefault: false
         editable: true
 
-dashboardProviders:
-  dashboardproviders.yaml:
-    providers:
-      - name: 'default'
-        orgId: 1
-        folder: ''
-        type: file
-        disableDeletion: false
-        editable: true
-        options:
-          path: /var/lib/grafana/dashboards/default
-
-dashboards:
-  default:
-    dramatiq-overview:
-      url: https://grafana.com/api/dashboards/18046/revisions/1/download
-      datasource: Loki
-    prometheus-stats:
-      url: https://grafana.com/api/dashboards/2/revisions/1/download
-      datasource: Prometheus
-
 resources:
   limits:
     cpu: 500m
@@ -61,8 +38,7 @@ resources:
     memory: 128Mi
 
 serviceMonitor:
-  enabled: true
-  namespace: observability
+  enabled: false
 
 test:
   enabled: false

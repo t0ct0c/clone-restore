@@ -20,7 +20,7 @@ spec:
       serviceAccountName: wp-k8s-service
       containers:
       - name: wp-k8s-service
-        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:latest
+        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260220-135155-async
         imagePullPolicy: Always
         ports:
         - containerPort: 8000
@@ -60,14 +60,20 @@ spec:
           value: "600"
         # OpenTelemetry endpoint (if observability is set up)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://opentelemetry-collector.observability.svc.cluster.local:4318/v1/traces"
+          value: "http://tempo.observability.svc.cluster.local:4318/v1/traces"
+        # Redis broker for Dramatiq
+        - name: REDIS_URL
+          value: "redis://:dramatiq-broker-password@redis-master.wordpress-staging.svc.cluster.local:6379/0"
+        # Database URL for job store
+        - name: DATABASE_URL
+          value: "mysql+aiomysql://admin:$(SHARED_RDS_PASSWORD)@$(SHARED_RDS_HOST)/wordpress"
         resources:
           requests:
-            cpu: 500m
-            memory: 1Gi
+            cpu: 250m
+            memory: 512Mi
           limits:
-            cpu: 2000m
-            memory: 4Gi
+            cpu: 1000m
+            memory: 2Gi
         livenessProbe:
           httpGet:
             path: /health
@@ -81,6 +87,66 @@ spec:
             path: /health
             port: 8000
           initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      - name: dramatiq-worker
+        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260220-135155-async
+        imagePullPolicy: Always
+        command: ["dramatiq", "app.main", "--queues", "clone-queue", "--processes", "2", "--threads", "2"]
+        env:
+        # Kubernetes namespace
+        - name: KUBERNETES_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # Redis broker for Dramatiq
+        - name: REDIS_URL
+          value: "redis://:dramatiq-broker-password@redis-master.wordpress-staging.svc.cluster.local:6379/0"
+        # Database URL for job store
+        - name: DATABASE_URL
+          value: "mysql+aiomysql://admin:$(SHARED_RDS_PASSWORD)@$(SHARED_RDS_HOST)/wordpress"
+        - name: SHARED_RDS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: rds-password
+              key: password
+              optional: true
+        - name: SHARED_RDS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: shared-rds-config
+              key: endpoint
+              optional: true
+        # OpenTelemetry endpoint
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://tempo.observability.svc.cluster.local:4318/v1/traces"
+        - name: OTEL_SERVICE_NAME
+          value: "wp-k8s-service-worker"
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+        livenessProbe:
+          exec:
+            command:
+            - pgrep
+            - -f
+            - dramatiq
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - pgrep
+            - -f
+            - dramatiq
+          initialDelaySeconds: 10
           periodSeconds: 10
           timeoutSeconds: 5
           failureThreshold: 3

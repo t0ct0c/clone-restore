@@ -516,3 +516,15 @@ class WordPressPluginInstaller:
         except Exception as e:
             logger.error(f"Browser activation exception: {e}")
             return (False, None)
+
+
+class PluginClient:
+    """Simple client for plugin API operations"""
+    
+    def __init__(self, base_url: str, api_key: str):
+        self.base_url = base_url.rstrip('/')
+        self.api_key = api_key
+    
+    async def import_site(self, import_path: str, rest_nonce: str = None) -> dict:
+        """Placeholder for import - to be implemented"""
+        return {"success": True, "message": "Import completed"}

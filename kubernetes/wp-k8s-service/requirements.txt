@@ -17,3 +17,8 @@ opentelemetry-instrumentation-requests==0.43b0
 opentelemetry-exporter-otlp-proto-http==1.22.0
 kubernetes==29.0.0
 pymysql==1.1.0
+dramatiq[redis,watch]==1.15.0
+redis==5.0.1
+aioredis==2.0.1
+sqlalchemy[asyncio]==2.0.25
+aiomysql==0.2.0

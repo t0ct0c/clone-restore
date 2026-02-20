@@ -1,0 +1,53 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: dramatiq-workers
+  namespace: wordpress-staging
+  labels:
+    app: wp-k8s-service
+spec:
+  # Scale the wp-k8s-service deployment
+  scaleTargetRef:
+    name: wp-k8s-service
+  # Minimum 2 workers always running
+  minReplicaCount: 2
+  # Maximum 20 workers when queue is backed up
+  maxReplicaCount: 20
+  # Check queue depth every 10 seconds
+  pollingInterval: 10
+  # Wait 60 seconds before scaling down after queue empties
+  cooldownPeriod: 60
+  # Use Redis queue depth as scaling trigger
+  triggers:
+  - type: redis
+    authenticationRef:
+      name: redis-auth
+    metadata:
+      # Redis broker address
+      address: redis-master.wordpress-staging.svc.cluster.local:6379
+      # Dramatiq queue name
+      listName: dramatiq:clone-queue
+      # Scale to 1 worker per 10 jobs in queue
+      listLength: "10"
+      # Redis database index (default is 0)
+      databaseIndex: "0"
+  # Advanced scaling behavior
+  advanced:
+    # Scale up faster than scale down
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 4
+        periodSeconds: 15
+      selectPolicy: Max
+    scaleDown:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+      selectPolicy: Min

@@ -24,7 +24,6 @@ from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.sdk.resources import Resource
 
 from .wp_auth import WordPressAuthenticator
-from .wp_plugin import WordPressPluginInstaller
 from .wp_options import WordPressOptionsFetcher
 from .k8s_provisioner import K8sProvisioner
 from .browser_setup import (
@@ -32,6 +31,7 @@ from .browser_setup import (
     setup_wordpress_with_browser,
     create_application_password,
 )
+from .tasks import clone_wordpress  # noqa: F401 (registered for Dramatiq)
 
 
 def _rest_url(base_url: str, route: str, method: str = "GET") -> str:
@@ -1270,3 +1270,69 @@ async def create_app_password_endpoint(request: CreateAppPasswordRequest):
     logger.info("🔐 ========================================")
 
     return CreateAppPasswordResponse(**result)
+
+
+# ============================================================================
+# ASYNC API V2 ENDPOINTS (Dramatiq background jobs)
+# ============================================================================
+
+
+class AsyncCloneRequest(BaseModel):
+    """Request model for async clone endpoint."""
+    source_url: str
+    customer_id: str
+    ttl_minutes: int = 60
+
+
+class JobStatusResponse(BaseModel):
+    """Response model for job status endpoint."""
+    job_id: str
+    type: str
+    status: str
+    progress: int
+    result: Optional[Dict] = None
+    error: Optional[str] = None
+    created_at: str
+    completed_at: Optional[str] = None
+    ttl_expires_at: Optional[str] = None
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize job store on FastAPI startup."""
+    from .job_store import init_job_store
+    import os
+    
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        await init_job_store(database_url)
+        logger.info("Job store initialized for async endpoints")
+
+
+@app.post("/api/v2/clone", response_model=JobStatusResponse, tags=["Async V2"])
+async def clone_async(request: AsyncCloneRequest):
+    """Clone WordPress site asynchronously (non-blocking)."""
+    from .tasks import clone_wordpress
+    from .job_store import get_job_store, JobType
+    
+    job_store = get_job_store()
+    job = await job_store.create_job(
+        job_type=JobType.clone,
+        request_payload=request.dict(),
+        ttl_minutes=request.ttl_minutes,
+    )
+    clone_wordpress.send(job.job_id)
+    logger.info(f"Enqueued async clone job {job.job_id}")
+    return JobStatusResponse(**job.to_dict())
+
+
+@app.get("/api/v2/job-status/{job_id}", response_model=JobStatusResponse, tags=["Async V2"])
+async def get_job_status(job_id: str):
+    """Get status of an async job."""
+    from .job_store import get_job_store
+    
+    job_store = get_job_store()
+    job = await job_store.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return JobStatusResponse(**job.to_dict())

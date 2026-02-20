@@ -1,0 +1,12 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: redis-auth
+  namespace: wordpress-staging
+  labels:
+    app: wp-k8s-service
+spec:
+  secretTargetRef:
+  - parameter: password
+    name: keda-redis-secret
+    key: password
