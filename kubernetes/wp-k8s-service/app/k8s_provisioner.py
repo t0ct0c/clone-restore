@@ -44,21 +44,19 @@ class K8sProvisioner:
         # Configuration from environment variables
         self.docker_image = os.getenv(
             "WORDPRESS_IMAGE",
-            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wordpress-target-sqlite:latest",
+            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:optimized",
         )
         self.traefik_dns = os.getenv("TRAEFIK_DNS", "clones.betaweb.ai")
 
-        # Shared RDS configuration (from ConfigMap)
-        self.use_shared_rds = os.getenv("USE_SHARED_RDS", "true").lower() == "true"
-        self.shared_rds_host = os.getenv("SHARED_RDS_HOST", "")
-        self.shared_rds_password = os.getenv("SHARED_RDS_PASSWORD", "")
+        # Warm pool enabled
+        self.use_warm_pool = os.getenv("USE_WARM_POOL", "true").lower() == "true"
 
         logger.info(f"K8sProvisioner initialized for namespace: {namespace}")
-        logger.info(f"Shared RDS: {self.use_shared_rds}, Host: {self.shared_rds_host}")
+        logger.info(f"Warm pool: {self.use_warm_pool}, Image: {self.docker_image}")
 
     def provision_target(self, customer_id: str, ttl_minutes: int = 30) -> Dict:
         """
-        Provision ephemeral WordPress clone using Kubernetes Job with TTL
+        Provision ephemeral WordPress clone using warm pool or cold fallback
 
         Args:
             customer_id: Unique clone identifier
@@ -67,16 +65,70 @@ class K8sProvisioner:
         Returns:
             Dict with clone details (URL, credentials, status)
         """
-        try:
-            logger.info(f"Provisioning Kubernetes clone for customer {customer_id}")
+        if self.use_warm_pool:
+            return self._provision_from_warm_pool(customer_id, ttl_minutes)
+        else:
+            return self._provision_cold(customer_id, ttl_minutes)
 
-            # 1. Generate credentials
+    def _provision_from_warm_pool(self, customer_id: str, ttl_minutes: int) -> Dict:
+        """Assign warm pod from pool (fast path)"""
+        import asyncio
+        from .warm_pool_controller import WarmPoolController
+
+        try:
+            logger.info(f"Assigning warm pod for {customer_id}")
+            warm_pool = WarmPoolController(namespace=self.namespace)
+            pod_name = asyncio.run(warm_pool.assign_warm_pod(customer_id))
+
+            if not pod_name:
+                logger.warning("No warm pods available, falling back to cold provision")
+                return self._provision_cold(customer_id, ttl_minutes)
+
+            # Get credentials from secret
+            secret = self.core_api.read_namespaced_secret(
+                f"{pod_name}-credentials", self.namespace
+            )
+            import base64
+
+            wp_password = base64.b64decode(secret.data["wordpress-password"]).decode()
+
+            # Tag pod for customer
+            self._tag_pod_for_customer(pod_name, customer_id, ttl_minutes)
+
+            # Create Service and Ingress
+            self._create_service_for_pod(customer_id, pod_name)
+            self._create_ingress(customer_id)
+
+            logger.info(f"Warm pod {pod_name} assigned to {customer_id}")
+            return {
+                "success": True,
+                "pod_name": pod_name,
+                "target_url": f"http://{customer_id}.wordpress-staging.svc.cluster.local",
+                "public_url": f"https://{customer_id}.clones.betaweb.ai",
+                "wordpress_username": "admin",
+                "wordpress_password": wp_password,
+                "api_key": "migration-master-key",
+                "expires_at": self._calculate_ttl_expires(ttl_minutes),
+                "namespace": self.namespace,
+                "warm_pool": True,
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to assign warm pod: {e}")
+            return self._provision_cold(customer_id, ttl_minutes)
+
+    def _provision_cold(self, customer_id: str, ttl_minutes: int) -> Dict:
+        """Cold provision new pod with MySQL sidecar (fallback)"""
+        try:
+            logger.info(f"Cold provisioning for {customer_id}")
+
+            # Generate credentials
             wp_password = self._generate_password()
             db_password = self._generate_password()
-            api_key = "migration-master-key"  # Fixed key for setup phase
+            api_key = "migration-master-key"
 
-            # 2. Create Secret for credentials (may return existing password)
-            secret_created, existing_db_password = self._create_secret(
+            # Create Secret
+            secret_created, _ = self._create_secret(
                 customer_id=customer_id,
                 wp_password=wp_password,
                 db_password=db_password,
@@ -90,29 +142,12 @@ class K8sProvisioner:
                     "message": "Failed to create Kubernetes Secret",
                 }
 
-            # 3. Create database for this clone
-            if self.use_shared_rds:
-                # Use existing password from secret if it existed, otherwise use new password
-                db_password_to_use = (
-                    existing_db_password if existing_db_password else db_password
-                )
-                db_created = self._create_database_on_shared_rds(
-                    customer_id=customer_id,
-                    db_password=db_password_to_use,
-                    existing_password=existing_db_password,
-                )
-
-                if not db_created:
-                    self._cleanup_secret(customer_id)
-                    return {
-                        "success": False,
-                        "error_code": "DB_CREATE_FAILED",
-                        "message": "Failed to create database on shared RDS",
-                    }
-
-            # 4. Create Deployment with TTL label for WordPress container
-            deployment_created = self._create_deployment(
-                customer_id=customer_id, ttl_minutes=ttl_minutes
+            # Create Deployment with MySQL sidecar
+            deployment_created = self._create_deployment_with_mysql_sidecar(
+                customer_id=customer_id,
+                ttl_minutes=ttl_minutes,
+                db_password=db_password,
+                wp_password=wp_password,
             )
 
             if not deployment_created:
@@ -123,37 +158,34 @@ class K8sProvisioner:
                     "message": "Failed to create Kubernetes Deployment",
                 }
 
-            # 5. Wait for pod to be running
+            # Wait for pod
             pod_ready = self._wait_for_pod_ready(customer_id, timeout=180)
-
             if not pod_ready:
-                logger.warning(f"Pod not ready after 180s, but continuing...")
+                logger.warning(f"Pod not ready after 180s")
 
-            # 5b. Activate custom-migrator plugin (required for WordPress initialization)
-            logger.info(f"Activating custom-migrator plugin for {customer_id}...")
-            plugin_activated = self.activate_plugin_in_container(customer_id)
-            if not plugin_activated:
-                logger.warning(
-                    f"Failed to activate plugin for {customer_id}, continuing anyway..."
-                )
+            # Plugin is pre-installed, no activation needed
+            logger.info(f"Cold provision complete for {customer_id}")
 
-            # 6. Create Service to expose the pod
-            service_created = self._create_service(customer_id)
+            return {
+                "success": True,
+                "pod_name": customer_id,
+                "target_url": f"http://{customer_id}.wordpress-staging.svc.cluster.local",
+                "public_url": f"https://{customer_id}.clones.betaweb.ai",
+                "wordpress_username": "admin",
+                "wordpress_password": wp_password,
+                "api_key": "migration-master-key",
+                "expires_at": self._calculate_ttl_expires(ttl_minutes),
+                "namespace": self.namespace,
+                "warm_pool": False,
+            }
 
-            if not service_created:
-                self._cleanup_deployment(customer_id)
-                self._cleanup_secret(customer_id)
-                return {
-                    "success": False,
-                    "error_code": "SERVICE_CREATE_FAILED",
-                    "message": "Failed to create Kubernetes Service",
-                }
-
-            # 7. Create Kubernetes Ingress for Traefik subdomain routing
-            ingress_created = self._create_ingress(customer_id)
-
-            if not ingress_created:
-                logger.warning("Ingress creation failed, clone may not be accessible")
+        except Exception as e:
+            logger.error(f"Cold provision failed: {e}")
+            return {
+                "success": False,
+                "error_code": "PROVISION_ERROR",
+                "message": f"Provisioning failed: {str(e)}",
+            }
 
             # 7b. Wait for WordPress to be configured and responding
             logger.info(f"Waiting for WordPress to be ready in {customer_id}...")
@@ -726,6 +758,230 @@ class K8sProvisioner:
         return self.run_wp_cli_in_container(
             customer_id, f"plugin activate {plugin_slug}"
         )
+
+    def _tag_pod_for_customer(self, pod_name: str, customer_id: str, ttl_minutes: int):
+        """Tag pod with customer_id and TTL"""
+        import base64
+
+        ttl_label = str(
+            int((datetime.utcnow() + timedelta(minutes=ttl_minutes)).timestamp())
+        )
+
+        body = {
+            "metadata": {
+                "labels": {
+                    "clone-id": customer_id,
+                    "ttl-expires-at": ttl_label,
+                    "pool-type": "assigned",
+                }
+            }
+        }
+        self.core_api.patch_namespaced_pod(pod_name, self.namespace, body)
+        logger.info(f"Tagged pod {pod_name} for customer {customer_id}")
+
+    def _create_service_for_pod(self, customer_id: str, pod_name: str) -> bool:
+        """Create ClusterIP Service for specific pod"""
+        try:
+            service = client.V1Service(
+                metadata=client.V1ObjectMeta(
+                    name=customer_id,
+                    namespace=self.namespace,
+                ),
+                spec=client.V1ServiceSpec(
+                    selector={"clone-id": customer_id},
+                    ports=[client.V1ServicePort(port=80, target_port=80)],
+                    type="ClusterIP",
+                ),
+            )
+            self.core_api.create_namespaced_service(self.namespace, service)
+            logger.info(f"Service created for pod {pod_name}: {customer_id}")
+            return True
+        except ApiException as e:
+            if e.status == 409:
+                logger.warning(f"Service already exists: {customer_id}")
+                return True
+            logger.error(f"Service creation failed: {e}")
+            return False
+
+    def _calculate_ttl_expires(self, ttl_minutes: int) -> str:
+        """Calculate TTL expiration time as ISO string"""
+        expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+        return expires_at.isoformat() + "Z"
+
+    def _create_deployment_with_mysql_sidecar(
+        self, customer_id: str, ttl_minutes: int, db_password: str, wp_password: str
+    ) -> bool:
+        """Create Deployment with WordPress + MySQL sidecar"""
+        try:
+            from datetime import datetime, timedelta
+
+            ttl_expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+            ttl_label = str(int(ttl_expires_at.timestamp()))
+
+            deployment = client.V1Deployment(
+                metadata=client.V1ObjectMeta(
+                    name=customer_id,
+                    namespace=self.namespace,
+                    labels={
+                        "app": "wordpress-clone",
+                        "clone-id": customer_id,
+                        "ttl-expires-at": ttl_label,
+                    },
+                ),
+                spec=client.V1DeploymentSpec(
+                    replicas=1,
+                    selector=client.V1LabelSelector(
+                        match_labels={"clone-id": customer_id}
+                    ),
+                    template=client.V1PodTemplateSpec(
+                        metadata=client.V1ObjectMeta(
+                            labels={
+                                "app": "wordpress-clone",
+                                "clone-id": customer_id,
+                                "ttl-expires-at": ttl_label,
+                            }
+                        ),
+                        spec=client.V1PodSpec(
+                            restart_policy="Always",
+                            containers=[
+                                # WordPress container
+                                client.V1Container(
+                                    name="wordpress",
+                                    image=self.docker_image,
+                                    ports=[
+                                        client.V1ContainerPort(
+                                            container_port=80, name="http"
+                                        )
+                                    ],
+                                    env=[
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_HOST",
+                                            value="127.0.0.1:3306",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_NAME",
+                                            value="wordpress",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_USER",
+                                            value="wordpress",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WORDPRESS_DB_PASSWORD",
+                                            value=db_password,
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WP_ADMIN_USER", value="admin"
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WP_ADMIN_PASSWORD",
+                                            value=wp_password,
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WP_ADMIN_EMAIL",
+                                            value="admin@example.com",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="WP_SITE_URL",
+                                            value=f"https://{customer_id}.clones.betaweb.ai",
+                                        ),
+                                    ],
+                                    resources=client.V1ResourceRequirements(
+                                        requests={"cpu": "250m", "memory": "512Mi"},
+                                        limits={"cpu": "500m", "memory": "1Gi"},
+                                    ),
+                                    liveness_probe=client.V1Probe(
+                                        http_get=client.V1HTTPGetAction(
+                                            path="/", port=80
+                                        ),
+                                        initial_delay_seconds=30,
+                                        period_seconds=10,
+                                    ),
+                                    readiness_probe=client.V1Probe(
+                                        http_get=client.V1HTTPGetAction(
+                                            path="/", port=80
+                                        ),
+                                        initial_delay_seconds=20,
+                                        period_seconds=5,
+                                    ),
+                                ),
+                                # MySQL sidecar container
+                                client.V1Container(
+                                    name="mysql",
+                                    image="mysql:8.0",
+                                    env=[
+                                        client.V1EnvVar(
+                                            name="MYSQL_DATABASE",
+                                            value="wordpress",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="MYSQL_USER",
+                                            value="wordpress",
+                                        ),
+                                        client.V1EnvVar(
+                                            name="MYSQL_PASSWORD",
+                                            value=db_password,
+                                        ),
+                                        client.V1EnvVar(
+                                            name="MYSQL_ROOT_PASSWORD",
+                                            value=db_password,
+                                        ),
+                                    ],
+                                    resources=client.V1ResourceRequirements(
+                                        requests={"cpu": "250m", "memory": "512Mi"},
+                                        limits={"cpu": "500m", "memory": "1Gi"},
+                                    ),
+                                    liveness_probe=client.V1Probe(
+                                        exec=client.V1ExecAction(
+                                            command=[
+                                                "mysqladmin",
+                                                "ping",
+                                                "-h127.0.0.1",
+                                            ]
+                                        ),
+                                        initial_delay_seconds=30,
+                                        period_seconds=10,
+                                    ),
+                                    readiness_probe=client.V1Probe(
+                                        exec=client.V1ExecAction(
+                                            command=[
+                                                "mysqladmin",
+                                                "ping",
+                                                "-h127.0.0.1",
+                                            ]
+                                        ),
+                                        initial_delay_seconds=5,
+                                        period_seconds=5,
+                                    ),
+                                    volume_mounts=[
+                                        client.V1VolumeMount(
+                                            name="mysql-data",
+                                            mount_path="/var/lib/mysql",
+                                        )
+                                    ],
+                                ),
+                            ],
+                            volumes=[
+                                client.V1Volume(
+                                    name="mysql-data",
+                                    empty_dir=client.V1EmptyDirVolumeSource(),
+                                )
+                            ],
+                        ),
+                    ),
+                ),
+            )
+
+            self.apps_api.create_namespaced_deployment(self.namespace, deployment)
+            logger.info(f"Deployment created with MySQL sidecar: {customer_id}")
+            return True
+
+        except ApiException as e:
+            if e.status == 409:
+                logger.warning(f"Deployment already exists: {customer_id}")
+                return True
+            logger.error(f"Deployment creation failed: {e}")
+            return False
 
     def _wait_for_wordpress_ready(self, customer_id: str, timeout: int = 120) -> bool:
         """Wait for WordPress to be configured and responding"""
