@@ -1279,6 +1279,7 @@ async def create_app_password_endpoint(request: CreateAppPasswordRequest):
 
 class AsyncCloneRequest(BaseModel):
     """Request model for async clone endpoint."""
+
     source_url: str
     customer_id: str
     ttl_minutes: int = 60
@@ -1286,6 +1287,7 @@ class AsyncCloneRequest(BaseModel):
 
 class JobStatusResponse(BaseModel):
     """Response model for job status endpoint."""
+
     job_id: str
     type: str
     status: str
@@ -1299,14 +1301,20 @@ class JobStatusResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize job store on FastAPI startup."""
+    """Initialize job store and warm pool on FastAPI startup."""
     from .job_store import init_job_store
+    from .warm_pool_controller import WarmPoolController
     import os
-    
+
     database_url = os.getenv("DATABASE_URL")
     if database_url:
         await init_job_store(database_url)
         logger.info("Job store initialized for async endpoints")
+
+    # Start warm pool controller
+    warm_pool = WarmPoolController(namespace="wordpress-staging")
+    asyncio.create_task(warm_pool.maintain_pool())
+    logger.info("Warm pool controller started (maintaining 1-2 pods)")
 
 
 @app.post("/api/v2/clone", response_model=JobStatusResponse, tags=["Async V2"])
@@ -1314,7 +1322,7 @@ async def clone_async(request: AsyncCloneRequest):
     """Clone WordPress site asynchronously (non-blocking)."""
     from .tasks import clone_wordpress
     from .job_store import get_job_store, JobType
-    
+
     job_store = get_job_store()
     job = await job_store.create_job(
         job_type=JobType.clone,
@@ -1326,11 +1334,13 @@ async def clone_async(request: AsyncCloneRequest):
     return JobStatusResponse(**job.to_dict())
 
 
-@app.get("/api/v2/job-status/{job_id}", response_model=JobStatusResponse, tags=["Async V2"])
+@app.get(
+    "/api/v2/job-status/{job_id}", response_model=JobStatusResponse, tags=["Async V2"]
+)
 async def get_job_status(job_id: str):
     """Get status of an async job."""
     from .job_store import get_job_store
-    
+
     job_store = get_job_store()
     job = await job_store.get_job(job_id)
     if not job:
