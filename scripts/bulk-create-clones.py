@@ -11,9 +11,9 @@ import time
 from datetime import datetime
 from typing import List, Dict
 
-# Use Traefik NLB directly to bypass SiteGround nginx interception
-API_BASE = "http://k8s-traefiks-traefik-30437c81e0-7add42ef82721255.elb.us-east-1.amazonaws.com"
-API_HOST_HEADER = "api.clones.betaweb.ai"
+# Use public ALB endpoint (clones.betaweb.ai)
+API_BASE = "https://clones.betaweb.ai"
+API_HOST_HEADER = "clones.betaweb.ai"
 SOURCE_URL = "https://betaweb.ai"
 SOURCE_USERNAME = "Charles@toctoc.com.au"
 SOURCE_PASSWORD = "6(4b`Nde1i_D"
@@ -76,7 +76,7 @@ def poll_job_status(job_id: str) -> Dict:
         return {"status": "error", "error": str(e)}
 
 
-def get_clone_credentials(clone_id: str, retries: int = 5) -> Dict:
+def get_clone_credentials(clone_id: str, retries: int = 10) -> Dict:
     """Fetch credentials from Kubernetes secret with retry"""
     import subprocess
     import base64
@@ -96,29 +96,45 @@ def get_clone_credentials(clone_id: str, retries: int = 5) -> Dict:
                 ],
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=10,
             )
-            if result.returncode == 0 and result.stdout:
+            if result.returncode == 0 and result.stdout and result.stdout != "{}":
                 data = json.loads(result.stdout)
+                wp_password = "N/A"
+                wp_username = "admin"
+                api_key = ""
+
+                if data.get("wordpress-password"):
+                    try:
+                        wp_password = base64.b64decode(
+                            data["wordpress-password"]
+                        ).decode()
+                    except:
+                        wp_password = "decode-error"
+
+                if data.get("wordpress-username"):
+                    try:
+                        wp_username = base64.b64decode(
+                            data["wordpress-username"]
+                        ).decode()
+                    except:
+                        pass
+
+                if data.get("api-key"):
+                    try:
+                        api_key = base64.b64decode(data["api-key"]).decode()
+                    except:
+                        pass
+
                 return {
-                    "wordpress_username": base64.b64decode(
-                        data.get("wordpress-username", "")
-                    ).decode()
-                    if data.get("wordpress-username")
-                    else "admin",
-                    "wordpress_password": base64.b64decode(
-                        data.get("wordpress-password", "")
-                    ).decode()
-                    if data.get("wordpress-password")
-                    else "N/A",
-                    "api_key": base64.b64decode(data.get("api-key", "")).decode()
-                    if data.get("api-key")
-                    else "",
+                    "wordpress_username": wp_username,
+                    "wordpress_password": wp_password,
+                    "api_key": api_key,
                 }
         except Exception as e:
-            pass
+            print(f"  Warning: Credential fetch failed for {clone_id}: {e}")
         if attempt < retries - 1:
-            time.sleep(2)
+            time.sleep(3)
     return {"wordpress_username": "admin", "wordpress_password": "N/A", "api_key": ""}
 
 
@@ -235,28 +251,34 @@ def main():
     print(f"Average Clone Time: {avg_time}s")
     print(f"{'=' * 80}\n")
 
+    # Define output files
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_file = f"bulk-clone-results-{timestamp}.json"
+    credentials_file = f"bulk-clone-credentials-{timestamp}.json"
+
     # Print all successful clone URLs with credentials
     successful_clones = [r for r in results if r.get("status") == "completed"]
     if successful_clones:
         print(f"SUCCESSFUL CLONES - URLs and Credentials:")
         print(f"{'=' * 80}")
+        print(f"{'Clone ID':<20} {'Public URL':<50} {'Username':<15}")
+        print(f"{'-' * 80}")
         for r in successful_clones:
-            print(f"\nClone: {r['clone_id']}")
-            print(f"  URL:      {r['url']}")
-            print(f"  Username: {r.get('wordpress_username', 'admin')}")
-            print(f"  Password: {r.get('wordpress_password', 'N/A')}")
-            print(f"  API Key:  {r.get('api_key', 'N/A')}")
-        print(f"\n{'=' * 80}")
+            clone_id = r["clone_id"]
+            public_url = r.get("public_url", r["url"])
+            username = r.get("wordpress_username", "admin")
+            print(f"{clone_id:<20} {public_url:<50} {username:<15}")
+        print(f"{'-' * 80}")
+        print(f"\nPasswords saved to: {credentials_file}")
         print(f"\nHOW TO ACCESS CLONES:")
         print(
             f"  1. Open browser to any URL above (e.g., https://load-test-001.clones.betaweb.ai)"
         )
-        print(f"  2. Login with WordPress credentials shown above")
+        print(f"  2. Login with credentials from {credentials_file}")
         print(f"  3. Admin panel: https://<clone_id>.clones.betaweb.ai/wp-admin")
         print(f"{'=' * 80}\n")
 
     # Save full results
-    output_file = f"bulk-clone-results-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     with open(output_file, "w") as f:
         json.dump(
             {
@@ -282,7 +304,27 @@ def main():
             indent=2,
         )
 
-    print(f"Full results saved to: {output_file}\n")
+    # Save clean credentials file (easy to read/use)
+    credentials_data = {
+        "test_timestamp": datetime.now().isoformat(),
+        "ttl_minutes": TTL_MINUTES,
+        "total_clones": len(successful_clones),
+        "clones": [
+            {
+                "clone_id": r["clone_id"],
+                "public_url": r.get("public_url", r["url"]),
+                "wordpress_username": r.get("wordpress_username", "admin"),
+                "wordpress_password": r.get("wordpress_password", "N/A"),
+                "api_key": r.get("api_key", ""),
+            }
+            for r in successful_clones
+        ],
+    }
+    with open(credentials_file, "w") as f:
+        json.dump(credentials_data, f, indent=2)
+
+    print(f"Full results saved to: {output_file}")
+    print(f"Credentials saved to: {credentials_file}\n")
 
     # Print cleanup reminder
     print(f"{'=' * 80}")

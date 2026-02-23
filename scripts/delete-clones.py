@@ -386,6 +386,79 @@ def main():
             )
         print()
 
+    # Clean up JSON credential files
+    print(f"{'=' * 80}")
+    print("CLEANING UP JSON CREDENTIAL FILES...")
+    print(f"{'=' * 80}\n")
+
+    import glob
+    import os
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(script_dir)
+
+    # Find and delete credential files
+    cred_files = glob.glob(os.path.join(parent_dir, "bulk-clone-credentials-*.json"))
+    deleted_files = []
+
+    for filepath in cred_files:
+        try:
+            # Read file to check if it contains deleted clones
+            with open(filepath, "r") as f:
+                data = json.load(f)
+
+            clones_in_file = data.get("total_clones", 0)
+            if clones_in_file > 0:
+                # Ask for confirmation before deleting files with credentials
+                print(
+                    f"File: {os.path.basename(filepath)} contains {clones_in_file} clones"
+                )
+                confirm = input(f"  Delete this file? (yes/no/all): ").lower()
+
+                if confirm == "all":
+                    for remaining in cred_files[cred_files.index(filepath) :]:
+                        os.remove(remaining)
+                        deleted_files.append(os.path.basename(remaining))
+                        print(f"  ✓ Deleted: {os.path.basename(remaining)}")
+                    break
+                elif confirm == "yes":
+                    os.remove(filepath)
+                    deleted_files.append(os.path.basename(filepath))
+                    print(f"  ✓ Deleted: {os.path.basename(filepath)}")
+                else:
+                    print(f"  - Kept: {os.path.basename(filepath)}")
+            else:
+                # Empty file, delete without confirmation
+                os.remove(filepath)
+                deleted_files.append(os.path.basename(filepath))
+                print(f"  ✓ Deleted (empty): {os.path.basename(filepath)}")
+        except Exception as e:
+            print(f"  ✗ Error deleting {os.path.basename(filepath)}: {e}")
+
+    # Also offer to delete results files
+    results_files = glob.glob(os.path.join(parent_dir, "bulk-clone-results-*.json"))
+    if results_files:
+        print(f"\nFound {len(results_files)} results file(s):")
+        for filepath in results_files:
+            print(f"  - {os.path.basename(filepath)}")
+
+        confirm = input(f"\nDelete results files too? (yes/no): ").lower()
+        if confirm == "yes":
+            for filepath in results_files:
+                try:
+                    os.remove(filepath)
+                    deleted_files.append(os.path.basename(filepath))
+                    print(f"  ✓ Deleted: {os.path.basename(filepath)}")
+                except Exception as e:
+                    print(f"  ✗ Error deleting {os.path.basename(filepath)}: {e}")
+
+    print(f"\n{'=' * 80}")
+    print(f"JSON FILES CLEANED UP: {len(deleted_files)}")
+    if deleted_files:
+        for f in deleted_files:
+            print(f"  - {f}")
+    print(f"{'=' * 80}\n")
+
 
 if __name__ == "__main__":
     main()
