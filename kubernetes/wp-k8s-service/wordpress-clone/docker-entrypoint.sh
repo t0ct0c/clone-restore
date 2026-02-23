@@ -45,6 +45,7 @@ define('DB_COLLATE', '');
 define('WP_DEBUG', false);
 define('WP_SITEURL', '$SITE_URL');
 define('WP_HOME', '$SITE_URL');
+
 if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ . '/' );
 }

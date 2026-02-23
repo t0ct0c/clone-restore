@@ -106,6 +106,40 @@ async def clone_wordpress(job_id: str) -> Dict:
             await job_store.update_job_status(job_id, JobStatus.failed, error=error_msg)
             return {"success": False, "error": error_msg}
 
+        # Step 5: Ensure HTTPS flag survives import plugin's wp-config rewrite.
+        # Pods sit behind a TLS-terminating LB so WordPress always receives
+        # HTTP; without $_SERVER['HTTPS']='on' the admin login redirect-loops.
+        pod_name = provision_result.get("pod_name")
+        if pod_name:
+            try:
+                from kubernetes import client as k8s_client, config as k8s_config
+                from kubernetes.stream import stream as k8s_stream
+
+                k8s_config.load_incluster_config()
+                v1 = k8s_client.CoreV1Api()
+                k8s_stream(
+                    v1.connect_get_namespaced_pod_exec,
+                    name=pod_name,
+                    namespace="wordpress-staging",
+                    command=[
+                        "bash",
+                        "-c",
+                        # Inject the line only if not already present
+                        "grep -q 'HTTPS.*on' /var/www/html/wp-config.php || "
+                        "sed -i '/require_once.*wp-settings/i "
+                        '\\$_SERVER["HTTPS"] = "on";\' '
+                        "/var/www/html/wp-config.php",
+                    ],
+                    container="wordpress",
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                )
+                logger.info(f"Ensured HTTPS flag in wp-config.php for {pod_name}")
+            except Exception as e:
+                logger.warning(f"Failed to inject HTTPS flag: {e}")
+
         await job_store.update_job_status(
             job_id, JobStatus.completed, progress=100, result=provision_result
         )
