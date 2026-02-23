@@ -926,10 +926,18 @@ require_once ABSPATH . 'wp-settings.php';
                 logger.warning(f"Filesystem cleanup failed: {e}")
 
     async def _tag_pod(self, pod_name: str, customer_id: str):
-        """Tag pod with customer_id"""
+        """Tag pod with customer_id, preserving app label for TTL cleaner"""
+        # Read current labels to preserve app: wordpress-clone
+        pod = self.v1.read_namespaced_pod(pod_name, self.namespace)
+        current_labels = pod.metadata.labels or {}
+
+        # Update labels while preserving app
         body = {
             "metadata": {
                 "labels": {
+                    "app": current_labels.get(
+                        "app", "wordpress-clone"
+                    ),  # Preserve app label
                     "clone-id": customer_id,
                     "pool-type": "assigned",
                     "pool-status": "assigned",
@@ -978,11 +986,12 @@ require_once ABSPATH . 'wp-settings.php';
                 logger.warning(f"Failed to delete secret {secret_name}: {e}")
 
     async def _untag_pod(self, pod_name: str):
-        """Remove customer labels from pod"""
+        """Remove customer labels from pod (clone-id, ttl-expires-at)"""
         body = {
             "metadata": {
                 "labels": {
-                    "clone-id": None  # Remove label
+                    "clone-id": None,  # Remove label
+                    "ttl-expires-at": None,  # Remove TTL label
                 }
             }
         }
