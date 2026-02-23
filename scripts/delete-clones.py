@@ -198,6 +198,48 @@ def extract_clone_ids_from_file(filepath: str) -> list:
     return []
 
 
+def capture_credentials_before_delete(clone_id: str) -> dict:
+    """Capture credentials from Kubernetes secret before deletion"""
+    import subprocess
+    import base64
+
+    try:
+        result = subprocess.run(
+            [
+                "kubectl",
+                "get",
+                "secret",
+                f"{clone_id}-credentials",
+                "-n",
+                NAMESPACE,
+                "-o",
+                "jsonpath={.data}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            return {
+                "clone_id": clone_id,
+                "url": f"https://{clone_id}.clones.betaweb.ai",
+                "username": base64.b64decode(
+                    data.get("wordpress-username", "")
+                ).decode()
+                if data.get("wordpress-username")
+                else "admin",
+                "password": base64.b64decode(
+                    data.get("wordpress-password", "")
+                ).decode()
+                if data.get("wordpress-password")
+                else "N/A",
+            }
+    except:
+        pass
+    return None
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -248,47 +290,64 @@ def main():
         print("No clones found to delete.")
         sys.exit(0)
 
-    print(f"Deleting {len(clone_ids)} clones...\n")
+    print(f"Deleting {len(clone_ids)} clones (parallel)...\n")
     print(f"{'=' * 80}")
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     results = []
+    captured_credentials = []
     start = datetime.now()
 
-    for i, clone_id in enumerate(clone_ids, 1):
-        result = None
-
+    def delete_single(clone_id):
+        creds = capture_credentials_before_delete(clone_id)
         if use_api:
-            # Try API first, fallback to kubectl
             result = delete_via_api(clone_id)
             if not result["success"]:
-                # Fallback to kubectl
                 result = delete_k8s_resources(clone_id)
         else:
-            # k8s-only mode
             result = delete_k8s_resources(clone_id)
+        return result, creds
 
-        results.append(result)
+    # Delete in parallel (10 at a time)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_clone = {
+            executor.submit(delete_single, clone_id): clone_id for clone_id in clone_ids
+        }
 
-        # Print status
-        if result.get("success"):
-            status = "✓ DELETED"
-            if result.get("method") == "k8s":
-                deleted = []
-                if result.get("deployment"):
-                    deleted.append("deployment")
-                if result.get("service"):
-                    deleted.append("service")
-                if result.get("ingress"):
-                    deleted.append("ingress")
-                if result.get("secret"):
-                    deleted.append("secret")
-                status += f" ({', '.join(deleted)})"
-        else:
-            status = "✗ FAILED"
-            error = result.get("error", result.get("response", "Unknown"))
-            status += f" - {error[:50]}"
+        for i, future in enumerate(as_completed(future_to_clone), 1):
+            clone_id = future_to_clone[future]
+            try:
+                result, creds = future.result()
+                if creds:
+                    captured_credentials.append(creds)
+                results.append(result)
+            except Exception as e:
+                results.append(
+                    {"success": False, "clone_id": clone_id, "error": str(e)}
+                )
 
-        print(f"[{i:3d}/{len(clone_ids)}] {clone_id} - {status}")
+            # Print status
+            result = results[-1]
+            if result.get("success"):
+                status = "✓ DELETED"
+                if result.get("method") == "k8s":
+                    deleted = []
+                    if result.get("deployment"):
+                        deleted.append("deployment")
+                    if result.get("service"):
+                        deleted.append("service")
+                    if result.get("ingress"):
+                        deleted.append("ingress")
+                    if result.get("secret"):
+                        deleted.append("secret")
+                    status += f" ({', '.join(deleted)})"
+            else:
+                status = "✗ FAILED"
+                error = result.get("error", result.get("response", "Unknown"))
+                status += f" - {error[:50]}"
+
+            print(f"[{i:3d}/{len(clone_ids)}] {clone_id} - {status}")
 
     elapsed = (datetime.now() - start).total_seconds()
     successful = sum(1 for r in results if r.get("success"))
@@ -299,6 +358,23 @@ def main():
     print(f"Failed: {len(clone_ids) - successful}/{len(clone_ids)}")
     print(f"Time: {elapsed:.1f}s")
     print(f"{'=' * 80}\n")
+
+    # Print captured credentials
+    if captured_credentials:
+        print(f"CAPTURED CREDENTIALS (before deletion):")
+        print(f"{'=' * 80}")
+        for creds in captured_credentials:
+            print(f"\nClone: {creds['clone_id']}")
+            print(f"  URL:      {creds['url']}")
+            print(f"  Username: {creds['username']}")
+            print(f"  Password: {creds['password']}")
+        print(f"\n{'=' * 80}\n")
+
+        # Save to file
+        creds_file = f"deleted-clones-credentials-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        with open(creds_file, "w") as f:
+            json.dump(captured_credentials, f, indent=2)
+        print(f"Credentials saved to: {creds_file}\n")
 
     # Print failed deletions
     failed = [r for r in results if not r.get("success")]

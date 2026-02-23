@@ -46,6 +46,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Note: We skip install-deps since we already installed system dependencies above
 RUN playwright install chromium
 
+# Install Camoufox browser components
+RUN python -m camoufox fetch
+
 # Copy application code
 COPY app/ /app/app/
 

@@ -1,26 +1,19 @@
 """
-Async job store for tracking Dramatiq background tasks.
-Uses SQLAlchemy with aiomysql driver for async MySQL access.
+Redis-based job store for tracking Dramatiq background tasks.
 """
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base, Mapped, mapped_column
-from sqlalchemy import select, func, String, JSON
+import json
+import redis.asyncio as redis
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
 from loguru import logger
 import uuid
-import json
-
-Base = declarative_base()
-
 
 class JobType(str, Enum):
     clone = "clone"
     restore = "restore"
     delete = "delete"
-
 
 class JobStatus(str, Enum):
     pending = "pending"
@@ -29,28 +22,21 @@ class JobStatus(str, Enum):
     failed = "failed"
     cancelled = "cancelled"
 
-
-class Job(Base):
-    """SQLAlchemy model for jobs table."""
-
-    __tablename__ = "jobs"
-
-    job_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    type: Mapped[JobType] = mapped_column(nullable=False)
-    status: Mapped[JobStatus] = mapped_column(nullable=False, default=JobStatus.pending)
-    progress: Mapped[int] = mapped_column(default=0)
-    request_payload: Mapped[dict] = mapped_column(JSON, nullable=False)
-    result: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
-    error: Mapped[Optional[str]] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(
-        default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-    completed_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-    ttl_expires_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
-
+class Job:
+    def __init__(self, job_id: str, job_type: JobType, request_payload: dict, ttl_minutes: int = 60):
+        self.job_id = job_id
+        self.type = job_type
+        self.status = JobStatus.pending
+        self.progress = 0
+        self.request_payload = request_payload
+        self.result = None
+        self.error = None
+        self.created_at = datetime.utcnow()
+        self.updated_at = datetime.utcnow()
+        self.completed_at = None
+        self.ttl_expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    
     def to_dict(self) -> Dict[str, Any]:
-        """Convert job to dictionary for API responses."""
         return {
             "job_id": self.job_id,
             "type": self.type.value,
@@ -59,259 +45,92 @@ class Job(Base):
             "request_payload": self.request_payload,
             "result": self.result,
             "error": self.error,
-            "created_at": self.created_at.isoformat() if self.created_at else None,
-            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
-            "completed_at": self.completed_at.isoformat()
-            if self.completed_at
-            else None,
-            "ttl_expires_at": self.ttl_expires_at.isoformat()
-            if self.ttl_expires_at
-            else None,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "ttl_expires_at": self.ttl_expires_at.isoformat(),
         }
-
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> 'Job':
+        job = cls(
+            job_id=data["job_id"],
+            job_type=JobType(data["type"]),
+            request_payload=data["request_payload"],
+        )
+        job.status = JobStatus(data["status"])
+        job.progress = data["progress"]
+        job.result = data.get("result")
+        job.error = data.get("error")
+        job.created_at = datetime.fromisoformat(data["created_at"])
+        job.updated_at = datetime.fromisoformat(data["updated_at"])
+        job.completed_at = datetime.fromisoformat(data["completed_at"]) if data.get("completed_at") else None
+        job.ttl_expires_at = datetime.fromisoformat(data["ttl_expires_at"])
+        return job
 
 class JobStore:
-    """
-    Async job store for managing background job state.
-
-    Usage:
-        job_store = JobStore()
-        await job_store.initialize()
-
-        job = await job_store.create_job(
-            job_type=JobType.clone,
-            request_payload={"source_url": "...", "customer_id": "..."}
-        )
-    """
-
-    def __init__(self, database_url: str = None):
-        self.database_url = database_url
-        self.engine = None
-        self.session_factory = None
-        logger.info("JobStore initialized")
-
+    def __init__(self, redis_url: str = "redis://redis-master.wordpress-staging.svc.cluster.local:6379/0"):
+        self.redis_url = redis_url
+        self.redis_client = None
+        self.key_prefix = "job:"
+        logger.info("Redis JobStore initialized")
+    
     async def initialize(self) -> None:
-        """Initialize database engine and session factory."""
-        if not self.database_url:
-            raise ValueError("DATABASE_URL not provided")
-
-        logger.info(f"Connecting to database: {self.database_url[:50]}...")
-
-        self.engine = create_async_engine(
-            self.database_url,
-            echo=False,
-            pool_pre_ping=True,
-            pool_size=10,
-            max_overflow=20,
-        )
-
-        self.session_factory = async_sessionmaker(
-            self.engine,
-            class_=AsyncSession,
-            expire_on_commit=False,
-        )
-
-        logger.info("Database connection established")
-
-    async def close(self) -> None:
-        """Close database connections."""
-        if self.engine:
-            await self.engine.dispose()
-            logger.info("Database connections closed")
-
-    async def create_job(
-        self,
-        job_type: JobType,
-        request_payload: Dict[str, Any],
-        ttl_minutes: int = 60,
-    ) -> Job:
-        """
-        Create a new job record.
-
-        Args:
-            job_type: Type of job (clone, restore, delete)
-            request_payload: Original request data
-            ttl_minutes: Time-to-live in minutes (default 60)
-
-        Returns:
-            Created Job object
-        """
+        logger.info(f"Connecting to Redis: {self.redis_url}")
+        self.redis_client = redis.from_url(self.redis_url, decode_responses=True)
+        logger.info("Redis connection established")
+    
+    async def create_job(self, job_type: JobType, request_payload: dict, ttl_minutes: int = 60) -> Job:
         job_id = str(uuid.uuid4())
-        ttl_expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
-
-        async with self.session_factory() as session:
-            job = Job(
-                job_id=job_id,
-                type=job_type,
-                status=JobStatus.pending,
-                progress=0,
-                request_payload=request_payload,
-                ttl_expires_at=ttl_expires_at,
-            )
-            session.add(job)
-            await session.commit()
-            await session.refresh(job)
-
-            logger.info(
-                f"Created job {job_id} (type={job_type.value}, ttl={ttl_minutes}m)"
-            )
-            return job
-
+        job = Job(job_id, job_type, request_payload, ttl_minutes)
+        await self.redis_client.setex(
+            f"{self.key_prefix}{job_id}",
+            int(ttl_minutes * 60 * 2),  # TTL = 2x job TTL
+            json.dumps(job.to_dict())
+        )
+        logger.info(f"Created job {job_id}")
+        return job
+    
     async def get_job(self, job_id: str) -> Optional[Job]:
-        """
-        Get job by ID.
+        data = await self.redis_client.get(f"{self.key_prefix}{job_id}")
+        if not data:
+            return None
+        return Job.from_dict(json.loads(data))
+    
+    async def update_job_status(self, job_id: str, status: JobStatus, progress: int = None, result: dict = None, error: str = None) -> Job:
+        job = await self.get_job(job_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+        
+        job.status = status
+        job.updated_at = datetime.utcnow()
+        if progress is not None:
+            job.progress = progress
+        if result is not None:
+            job.result = result
+        if error is not None:
+            job.error = error
+        if status in [JobStatus.completed, JobStatus.failed, JobStatus.cancelled]:
+            job.completed_at = datetime.utcnow()
+        
+        await self.redis_client.setex(
+            f"{self.key_prefix}{job_id}",
+            7200,  # 2 hours TTL
+            json.dumps(job.to_dict())
+        )
+        logger.info(f"Updated job {job_id}: status={status.value}, progress={progress}")
+        return job
 
-        Args:
-            job_id: Job UUID
-
-        Returns:
-            Job object or None if not found
-        """
-        async with self.session_factory() as session:
-            result = await session.execute(select(Job).where(Job.job_id == job_id))
-            return result.scalar_one_or_none()
-
-    async def update_job_status(
-        self,
-        job_id: str,
-        status: JobStatus,
-        progress: int = None,
-        result: Dict[str, Any] = None,
-        error: str = None,
-    ) -> Job:
-        """
-        Update job status and related fields.
-
-        Args:
-            job_id: Job UUID
-            status: New status
-            progress: Progress percentage (0-100)
-            result: Result data (for completed jobs)
-            error: Error message (for failed jobs)
-
-        Returns:
-            Updated Job object
-        """
-        async with self.session_factory() as session:
-            stmt = select(Job).where(Job.job_id == job_id)
-            query_result = await session.execute(stmt)
-            job = query_result.scalar_one_or_none()
-
-            if not job:
-                raise ValueError(f"Job {job_id} not found")
-
-            job.status = status
-
-            if progress is not None:
-                job.progress = progress
-
-            if result is not None:
-                job.result = result
-
-            if error is not None:
-                job.error = error
-
-            if status in (JobStatus.completed, JobStatus.failed, JobStatus.cancelled):
-                job.completed_at = datetime.utcnow()
-
-            await session.commit()
-            await session.refresh(job)
-
-            logger.info(
-                f"Updated job {job_id}: status={status.value}, progress={progress}"
-            )
-            return job
-
-    async def list_jobs(
-        self,
-        status: JobStatus = None,
-        job_type: JobType = None,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> List[Job]:
-        """
-        List jobs with optional filtering.
-
-        Args:
-            status: Filter by status
-            job_type: Filter by type
-            limit: Maximum results
-            offset: Pagination offset
-
-        Returns:
-            List of Job objects
-        """
-        async with self.session_factory() as session:
-            query = select(Job)
-
-            if status:
-                query = query.where(Job.status == status)
-
-            if job_type:
-                query = query.where(Job.type == job_type)
-
-            query = query.order_by(Job.created_at.desc())
-            query = query.offset(offset).limit(limit)
-
-            result = await session.execute(query)
-            return list(result.scalars().all())
-
-    async def cleanup_expired_jobs(self) -> int:
-        """
-        Delete jobs that have passed their TTL expiration.
-
-        Returns:
-            Number of jobs deleted
-        """
-        from sqlalchemy import delete
-
-        async with self.session_factory() as session:
-            query = delete(Job).where(Job.ttl_expires_at < datetime.utcnow())
-            result = await session.execute(query)
-            await session.commit()
-
-            deleted = result.rowcount
-            if deleted > 0:
-                logger.info(f"Cleaned up {deleted} expired jobs")
-
-            return deleted
-
-    async def get_pending_jobs(self) -> List[Job]:
-        """Get all pending jobs for processing."""
-        async with self.session_factory() as session:
-            result = await session.execute(
-                select(Job)
-                .where(Job.status == JobStatus.pending)
-                .order_by(Job.created_at.asc())
-            )
-            return list(result.scalars().all())
-
-
-# Global job store instance
-_job_store: Optional[JobStore] = None
-
+# Global singleton
+_job_store = None
 
 def get_job_store() -> JobStore:
-    """Get the global job store instance."""
-    if _job_store is None:
-        raise RuntimeError("JobStore not initialized. Call init_job_store() first.")
-    return _job_store
-
-
-async def init_job_store(database_url: str = None) -> JobStore:
-    """
-    Initialize the global job store.
-
-    Args:
-        database_url: Database connection URL (defaults to DATABASE_URL env var)
-
-    Returns:
-        Initialized JobStore instance
-    """
     global _job_store
-
     if _job_store is None:
-        _job_store = JobStore(database_url)
-        await _job_store.initialize()
-
+        _job_store = JobStore()
     return _job_store
+
+async def init_job_store(redis_url: str = None) -> None:
+    global _job_store
+    _job_store = JobStore(redis_url)
+    await _job_store.initialize()

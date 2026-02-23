@@ -23,13 +23,6 @@ spec:
   - host: clones.betaweb.ai
     http:
       paths:
-      - path: /clone
-        pathType: Prefix
-        backend:
-          service:
-            name: wp-k8s-service
-            port:
-              number: 80
       - path: /restore
         pathType: Prefix
         backend:
@@ -66,6 +59,20 @@ spec:
             port:
               number: 80
       - path: /provision
+        pathType: Prefix
+        backend:
+          service:
+            name: wp-k8s-service
+            port:
+              number: 80
+      - path: /api/v2/clone
+        pathType: Prefix
+        backend:
+          service:
+            name: wp-k8s-service
+            port:
+              number: 80
+      - path: /api/v2/job-status
         pathType: Prefix
         backend:
           service:

@@ -59,8 +59,8 @@ async def setup_wordpress_with_browser(
                 headless=True,
                 humanize=True,  # Add human-like cursor movement and typing delays
                 geoip=True,  # Use real geolocation data (requires ~1.3GB font cache)
-                os=['windows', 'macos'],  # Randomly choose OS for fingerprint
-                locale='en-US'
+                os=["windows", "macos"],  # Randomly choose OS for fingerprint
+                locale="en-US",
             ) as browser:
                 # Create a context with realistic fingerprints
                 context = await browser.new_context(
@@ -75,26 +75,23 @@ async def setup_wordpress_with_browser(
 
                 # Step 1: Login
                 l.info(f"Step 1: Navigating to login page {url}/wp-login.php")
-                try:
-                    await page.goto(
-                        f"{url}/wp-login.php", wait_until="networkidle", timeout=120000
-                    )
-                except Exception as e:
-                    l.error(f"Failed to load login page: {e}")
-                    # Log current page content for debugging
-                    content = await page.content()
-                    l.debug(
-                        f"Current page content (first 1000 chars): {content[:1000]}"
-                    )
-                    raise
+                await page.goto(
+                    f"{url}/wp-login.php", wait_until="domcontentloaded", timeout=120000
+                )
+                # Wait for page to fully stabilize
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                await asyncio.sleep(3)
 
                 # Check for bot block or specific challenge
-                content = await page.content()
-                if "Cloudflare" in content or "Attention Required" in content:
-                    l.warning(
-                        "Detected Cloudflare or bot challenge on login page - trying to wait it out"
-                    )
-                    await asyncio.sleep(5)
+                try:
+                    content = await page.content()
+                    if "Cloudflare" in content or "Attention Required" in content:
+                        l.warning(
+                            "Detected Cloudflare or bot challenge on login page - trying to wait it out"
+                        )
+                        await asyncio.sleep(5)
+                except Exception as e:
+                    l.warning(f"Could not check page content: {e}")
 
                 # Fill login form
                 l.info("Filling login credentials")
@@ -211,14 +208,20 @@ async def setup_wordpress_with_browser(
                 try:
                     await api_key_input.wait_for(state="visible", timeout=10000)
                     plugin_already_active = True
-                    l.info("Plugin is already active - found API key field on settings page")
+                    l.info(
+                        "Plugin is already active - found API key field on settings page"
+                    )
                 except Exception:
-                    l.info("Plugin settings page not found - plugin needs to be uploaded")
+                    l.info(
+                        "Plugin settings page not found - plugin needs to be uploaded"
+                    )
 
                 if plugin_already_active:
                     # Plugin is active, get the API key directly
                     api_key = await api_key_input.get_attribute("value")
-                    if api_key and (len(api_key) == 32 or api_key == "migration-master-key"):
+                    if api_key and (
+                        len(api_key) == 32 or api_key == "migration-master-key"
+                    ):
                         l.info(f"Retrieved API key from settings: {api_key[:8]}...")
 
                         # Enable import if target role
@@ -229,19 +232,25 @@ async def setup_wordpress_with_browser(
                             )
                             try:
                                 if await import_checkbox.count() > 0:
-                                    is_checked = await import_checkbox.is_checked(timeout=5000)
+                                    is_checked = await import_checkbox.is_checked(
+                                        timeout=5000
+                                    )
                                     if not is_checked:
                                         await import_checkbox.check(timeout=5000)
                                         save_button = page.locator(
                                             'input[type="submit"][name="submit"]'
                                         )
                                         await save_button.click(timeout=10000)
-                                        await page.wait_for_load_state("networkidle", timeout=30000)
+                                        await page.wait_for_load_state(
+                                            "networkidle", timeout=30000
+                                        )
                                         l.info("Import enabled and settings saved")
                                     else:
                                         l.info("Import already enabled")
                             except Exception as e:
-                                l.warning(f"Could not enable import: {e}, continuing anyway")
+                                l.warning(
+                                    f"Could not enable import: {e}, continuing anyway"
+                                )
 
                         return {
                             "success": True,
@@ -251,7 +260,9 @@ async def setup_wordpress_with_browser(
                             "message": "Plugin already active, retrieved API key from settings",
                         }
                     else:
-                        l.warning(f"API key field found but value invalid: '{api_key}', will re-upload plugin")
+                        l.warning(
+                            f"API key field found but value invalid: '{api_key}', will re-upload plugin"
+                        )
                         plugin_already_active = False
 
                 # Plugin not active - need to upload it
@@ -267,10 +278,14 @@ async def setup_wordpress_with_browser(
                             timeout=60000,
                         )
                         current_url = page.url
-                        l.info(f"Upload page attempt {plugins_attempt + 1}/3 - URL: {current_url}")
+                        l.info(
+                            f"Upload page attempt {plugins_attempt + 1}/3 - URL: {current_url}"
+                        )
 
                         if "wp-login.php" in current_url:
-                            l.warning("Redirected to login from upload page, re-logging in...")
+                            l.warning(
+                                "Redirected to login from upload page, re-logging in..."
+                            )
                             await page.wait_for_selector(
                                 'input[name="log"]', state="visible", timeout=30000
                             )
@@ -285,7 +300,9 @@ async def setup_wordpress_with_browser(
                                 continue
 
                         # Check if we're on the upload page
-                        upload_form = page.locator('input[type="file"][name="pluginzip"]')
+                        upload_form = page.locator(
+                            'input[type="file"][name="pluginzip"]'
+                        )
                         await upload_form.wait_for(state="visible", timeout=30000)
                         plugins_page_loaded = True
                         l.info("Plugin upload page loaded successfully")
@@ -312,10 +329,7 @@ async def setup_wordpress_with_browser(
 
                 # Check if the "Upload Plugin" button needs to be clicked first
                 upload_toggle = page.locator(".upload-view-toggle")
-                if (
-                    await upload_toggle.count() > 0
-                    and await upload_toggle.is_visible()
-                ):
+                if await upload_toggle.count() > 0 and await upload_toggle.is_visible():
                     l.info("Clicking 'Upload Plugin' toggle")
                     await upload_toggle.click()
 
@@ -334,9 +348,7 @@ async def setup_wordpress_with_browser(
                     async def log_request(request):
                         nonlocal upload_started
                         if request.method == "POST" and "update.php" in request.url:
-                            l.info(
-                                f"Detected outgoing upload request: {request.url}"
-                            )
+                            l.info(f"Detected outgoing upload request: {request.url}")
                             upload_started = True
 
                     page.on("request", log_request)
@@ -352,9 +364,7 @@ async def setup_wordpress_with_browser(
                     l.info("Button found, clicking 'Install Now'")
 
                     try:
-                        await submit_button.click(
-                            delay=100, force=True, timeout=30000
-                        )
+                        await submit_button.click(delay=100, force=True, timeout=30000)
                     except Exception as click_err:
                         l.warning(
                             f"Regular click failed: {click_err}. Trying JavaScript click fallback..."
@@ -376,9 +386,7 @@ async def setup_wordpress_with_browser(
                                 '() => { const f = document.querySelector("form#plugin-upload-form, form.wp-upload-form"); if(f) f.submit(); }'
                             )
                         except Exception as eval_err:
-                            l.error(
-                                f"JavaScript form submission failed: {eval_err}"
-                            )
+                            l.error(f"JavaScript form submission failed: {eval_err}")
 
                     l.info("Waiting for result (navigation or error message)...")
 
@@ -428,9 +436,7 @@ async def setup_wordpress_with_browser(
                         l.error(f"Upload error detected: {error_text}")
                         raise Exception(f"Plugin upload failed: {error_text}")
                     if "plugin-install.php?tab=upload" not in page.url:
-                        l.info(
-                            f"URL changed to {page.url}, assuming upload succeeded"
-                        )
+                        l.info(f"URL changed to {page.url}, assuming upload succeeded")
 
                 l.info(f"Upload flow complete, current URL: {page.url}")
 
@@ -439,9 +445,7 @@ async def setup_wordpress_with_browser(
                 l.info("Step 3: Activating plugin from upload success page")
                 activate_direct = page.locator('a:has-text("Activate Plugin")')
                 if await activate_direct.count() > 0:
-                    l.info(
-                        "Found 'Activate Plugin' link on success page, clicking it"
-                    )
+                    l.info("Found 'Activate Plugin' link on success page, clicking it")
                     try:
                         await activate_direct.click()
                         await page.wait_for_load_state("networkidle", timeout=60000)
@@ -468,7 +472,9 @@ async def setup_wordpress_with_browser(
 
                 # Handle reauth redirect
                 if "wp-login.php" in page.url:
-                    l.warning("Redirected to login from settings page, re-logging in...")
+                    l.warning(
+                        "Redirected to login from settings page, re-logging in..."
+                    )
                     await page.wait_for_selector(
                         'input[name="log"]', state="visible", timeout=30000
                     )

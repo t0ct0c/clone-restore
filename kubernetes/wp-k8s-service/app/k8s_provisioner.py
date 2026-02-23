@@ -44,7 +44,7 @@ class K8sProvisioner:
         # Configuration from environment variables
         self.docker_image = os.getenv(
             "WORDPRESS_IMAGE",
-            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:optimized",
+            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:optimized-v8",
         )
         self.traefik_dns = os.getenv("TRAEFIK_DNS", "clones.betaweb.ai")
 
@@ -78,15 +78,23 @@ class K8sProvisioner:
         try:
             logger.info(f"Assigning warm pod for {customer_id}")
             warm_pool = WarmPoolController(namespace=self.namespace)
-            pod_name = asyncio.run(warm_pool.assign_warm_pod(customer_id))
+
+            # Run async method in a separate thread to avoid event loop conflicts
+            import concurrent.futures
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(
+                    asyncio.run, warm_pool.assign_warm_pod(customer_id)
+                )
+                pod_name = future.result(timeout=60)
 
             if not pod_name:
                 logger.warning("No warm pods available, falling back to cold provision")
                 return self._provision_cold(customer_id, ttl_minutes)
 
-            # Get credentials from secret
+            # Get credentials from secret (secret was renamed to customer_id by warm_pool_controller)
             secret = self.core_api.read_namespaced_secret(
-                f"{pod_name}-credentials", self.namespace
+                f"{customer_id}-credentials", self.namespace
             )
             import base64
 
@@ -94,6 +102,11 @@ class K8sProvisioner:
 
             # Tag pod for customer
             self._tag_pod_for_customer(pod_name, customer_id, ttl_minutes)
+
+            # Clean up any existing resources with this customer_id (from previous failed attempts)
+            self._delete_service(customer_id)
+            self._delete_ingress(customer_id)
+            self._cleanup_deployment(customer_id)
 
             # Create Service and Ingress
             self._create_service_for_pod(customer_id, pod_name)
@@ -111,6 +124,7 @@ class K8sProvisioner:
                 "expires_at": self._calculate_ttl_expires(ttl_minutes),
                 "namespace": self.namespace,
                 "warm_pool": True,
+                "message": "WordPress clone provisioned from warm pool",
             }
 
         except Exception as e:
@@ -163,6 +177,10 @@ class K8sProvisioner:
             if not pod_ready:
                 logger.warning(f"Pod not ready after 180s")
 
+            # Create Service and Ingress
+            self._create_service(customer_id)
+            self._create_ingress(customer_id)
+
             # Plugin is pre-installed, no activation needed
             logger.info(f"Cold provision complete for {customer_id}")
 
@@ -177,6 +195,7 @@ class K8sProvisioner:
                 "expires_at": self._calculate_ttl_expires(ttl_minutes),
                 "namespace": self.namespace,
                 "warm_pool": False,
+                "message": "WordPress clone provisioned successfully",
             }
 
         except Exception as e:
@@ -417,11 +436,17 @@ class K8sProvisioner:
                             }
                         ),
                         spec=client.V1PodSpec(
+                            image_pull_secrets=[
+                                client.V1LocalObjectReference(
+                                    name="ecr-registry-secret"
+                                )
+                            ],
                             restart_policy="Always",
                             containers=[
                                 client.V1Container(
                                     name="wordpress",
                                     image=self.docker_image,
+                                    image_pull_policy="Always",
                                     ports=[
                                         client.V1ContainerPort(
                                             container_port=80, name="http"
@@ -646,6 +671,28 @@ class K8sProvisioner:
         except ApiException:
             pass
 
+    def _delete_service(self, customer_id: str):
+        """Delete Service"""
+        try:
+            self.core_api.delete_namespaced_service(
+                name=customer_id,
+                namespace=self.namespace,
+            )
+            logger.info(f"Deleted Service: {customer_id}")
+        except ApiException:
+            pass
+
+    def _delete_ingress(self, customer_id: str):
+        """Delete Ingress"""
+        try:
+            self.networking_api.delete_namespaced_ingress(
+                name=customer_id,
+                namespace=self.namespace,
+            )
+            logger.info(f"Deleted Ingress: {customer_id}")
+        except ApiException:
+            pass
+
     def _cleanup_deployment(self, customer_id: str):
         """Delete Deployment (and its pods)"""
         try:
@@ -842,12 +889,18 @@ class K8sProvisioner:
                             }
                         ),
                         spec=client.V1PodSpec(
+                            image_pull_secrets=[
+                                client.V1LocalObjectReference(
+                                    name="ecr-registry-secret"
+                                )
+                            ],
                             restart_policy="Always",
                             containers=[
                                 # WordPress container
                                 client.V1Container(
                                     name="wordpress",
                                     image=self.docker_image,
+                                    image_pull_policy="Always",
                                     ports=[
                                         client.V1ContainerPort(
                                             container_port=80, name="http"
@@ -908,7 +961,7 @@ class K8sProvisioner:
                                 # MySQL sidecar container
                                 client.V1Container(
                                     name="mysql",
-                                    image="mysql:8.0",
+                                    image="044514005641.dkr.ecr.us-east-1.amazonaws.com/mysql:8.0",
                                     env=[
                                         client.V1EnvVar(
                                             name="MYSQL_DATABASE",
@@ -932,7 +985,7 @@ class K8sProvisioner:
                                         limits={"cpu": "500m", "memory": "1Gi"},
                                     ),
                                     liveness_probe=client.V1Probe(
-                                        exec=client.V1ExecAction(
+                                        _exec=client.V1ExecAction(
                                             command=[
                                                 "mysqladmin",
                                                 "ping",
@@ -943,7 +996,7 @@ class K8sProvisioner:
                                         period_seconds=10,
                                     ),
                                     readiness_probe=client.V1Probe(
-                                        exec=client.V1ExecAction(
+                                        _exec=client.V1ExecAction(
                                             command=[
                                                 "mysqladmin",
                                                 "ping",

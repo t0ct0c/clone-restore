@@ -7,6 +7,7 @@ Provides REST API for automated WordPress plugin installation and cloning.
 from loguru import logger
 import time
 import os
+import asyncio
 from typing import Optional, Dict
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, status
@@ -160,17 +161,6 @@ class SetupRequest(BaseModel):
     role: Optional[str] = Field("source", pattern="^(source|target)$")
 
 
-class CloneRequest(BaseModel):
-    source: WordPressCredentials
-    target: Optional[WordPressCredentials] = None
-    auto_provision: bool = Field(
-        True, description="Auto-provision target if not provided"
-    )
-    ttl_minutes: int = Field(
-        60, ge=5, le=120, description="TTL for auto-provisioned target"
-    )
-
-
 class ProvisionRequest(BaseModel):
     customer_id: str = Field(
         ..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9-]+$"
@@ -194,15 +184,6 @@ class SetupResponse(BaseModel):
     plugin_status: str
     import_enabled: Optional[bool] = None
     message: str
-
-
-class CloneResponse(BaseModel):
-    success: bool
-    message: str
-    source_api_key: Optional[str] = None
-    target_api_key: Optional[str] = None
-    target_import_enabled: bool = False
-    provisioned_target: Optional[Dict] = None  # Details of auto-provisioned target
 
 
 class RestoreRequest(BaseModel):
@@ -842,190 +823,6 @@ async def create_app_password_endpoint(request: CreateAppPasswordRequest):
     return CreateAppPasswordResponse(**result)
 
 
-@app.post("/clone", response_model=CloneResponse)
-async def clone_endpoint(request: CloneRequest):
-    """
-    Clone WordPress from source to target
-
-    If target is not provided and auto_provision is True, an ephemeral EC2 target
-    will be automatically provisioned.
-    """
-    logger.info("📋 ========================================")
-    logger.info("📋 [CLONE-START] Clone request received")
-    logger.info(f"📋 [CLONE-START] Source: {request.source.url}")
-    logger.info(f"📋 [CLONE-START] Auto-provision: {request.auto_provision}")
-    if request.target:
-        logger.info(f"📋 [CLONE-START] Target: {request.target.url}")
-    logger.info("📋 ========================================")
-
-    provisioned_target_info = None
-    target_url = None
-    target_username = None
-    target_password = None
-
-    # Setup source - Use browser-based setup for better compatibility with bot protection
-    logger.info("📋 [CLONE-SOURCE-SETUP] Setting up source WordPress")
-    source_result = await setup_wordpress_with_browser(
-        str(request.source.url),
-        request.source.username,
-        request.source.password,
-        role="source",
-    )
-
-    if not source_result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Source setup failed: {source_result.get('message')}",
-        )
-
-    # Determine target: use provided or auto-provision
-    if request.target is None:
-        if not request.auto_provision:
-            logger.error(
-                "📋 [CLONE-TARGET-SETUP] ❌ No target provided and auto_provision disabled"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Target credentials required when auto_provision is False",
-            )
-
-        # Auto-provision Kubernetes target
-        logger.info(
-            "📋 [CLONE-TARGET-PROVISION] Auto-provisioning Kubernetes target..."
-        )
-        provisioner = K8sProvisioner()
-
-        # Generate unique customer_id from timestamp
-        customer_id = f"clone-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-
-        provision_result = provisioner.provision_target(
-            customer_id=customer_id, ttl_minutes=request.ttl_minutes
-        )
-
-        if not provision_result.get("success"):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Target provisioning failed: {provision_result.get('message')}",
-            )
-
-        target_url = provision_result["target_url"]  # Direct URL for setup
-        public_url = provision_result.get("public_url", target_url)  # ALB URL for user
-        target_username = provision_result["wordpress_username"]
-        target_password = provision_result["wordpress_password"]
-
-        provisioned_target_info = {
-            "target_url": public_url,  # Show public URL to user
-            "public_url": public_url,  # For URL updates
-            "wordpress_username": target_username,
-            "wordpress_password": target_password,
-            "expires_at": provision_result.get("expires_at"),
-            "ttl_minutes": request.ttl_minutes,
-            "customer_id": customer_id,
-            "namespace": provision_result.get("namespace"),
-        }
-
-        logger.info(f"Target provisioned: {public_url}")
-    else:
-        # Use provided target credentials
-        target_url = str(request.target.url)
-        target_username = request.target.username
-        target_password = request.target.password
-
-    # Setup target: use browser or direct if already provisioned
-    if request.target is None:
-        # Auto-provisioned target
-        if provision_result.get("api_key"):
-            logger.info("Using direct API key from provisioner, skipping browser setup")
-            target_result = {
-                "success": True,
-                "api_key": provision_result["api_key"],
-                "import_enabled": True,
-                "message": "Direct setup successful",
-            }
-        else:
-            logger.info(
-                "📋 [CLONE-TARGET-SETUP] Direct API key missing, using browser setup"
-            )
-            target_result = await setup_target_with_browser(
-                target_url, target_username, target_password
-            )
-    else:
-        # User-provided target - use HTTP-based setup
-        logger.info(
-            "📋 [CLONE-TARGET-SETUP] Using HTTP-based setup for user-provided target"
-        )
-        target_result = await setup_wordpress(
-            target_url, target_username, target_password, role="target"
-        )
-
-    if not target_result.get("success"):
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Target setup failed: {target_result.get('message')}",
-        )
-
-    # Perform clone
-    logger.info("📋 [CLONE-EXECUTE] Starting clone operation")
-    logger.info(f"📋 [CLONE-EXECUTE] Source URL: {request.source.url}")
-    logger.info(f"📋 [CLONE-EXECUTE] Target URL: {target_url}")
-
-    clone_result = perform_clone(
-        str(request.source.url),
-        source_result["api_key"],
-        target_url,
-        target_result["api_key"],
-        public_target_url=public_url,
-        admin_user=target_username,
-        admin_password=target_password,
-    )
-
-    if not clone_result.get("success"):
-        logger.error(f"Clone failed: {clone_result.get('message')}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=clone_result.get("message", "Clone failed"),
-        )
-
-    # Re-activate the migrator plugin on the clone and set a known API key
-    # (import process deactivates plugin and clone inherits source's API key)
-    if provisioned_target_info and provisioned_target_info.get("customer_id"):
-        customer_id = provisioned_target_info["customer_id"]
-        provisioner = K8sProvisioner()
-
-        logger.info("Re-activating custom-migrator plugin on clone pod...")
-        provisioner.activate_plugin_in_container(customer_id)
-
-        # Set API key to migration-master-key so restore endpoint can use a known key
-        logger.info("Setting clone API key to migration-master-key...")
-        provisioner.run_wp_cli_in_container(
-            customer_id, "option update custom_migrator_api_key migration-master-key"
-        )
-        # Also enable import on the clone
-        provisioner.run_wp_cli_in_container(
-            customer_id, "option update custom_migrator_allow_import 1"
-        )
-
-    # Force-update WordPress URLs in Kubernetes pod
-    # WordPress auto-detects Host header and may revert URLs
-    if provisioned_target_info and provisioned_target_info.get("customer_id"):
-        logger.info("📋 [CLONE-FINALIZE] Force-updating WordPress URLs")
-        provisioner = K8sProvisioner()
-        provisioner.update_wordpress_urls(
-            provisioned_target_info["customer_id"],
-            provisioned_target_info["public_url"],
-        )
-
-    logger.info("Clone process finished successfully")
-    return CloneResponse(
-        success=True,
-        message="Clone completed successfully",
-        source_api_key=source_result["api_key"],
-        target_api_key=target_result["api_key"],
-        target_import_enabled=target_result.get("import_enabled", False),
-        provisioned_target=provisioned_target_info,
-    )
-
-
 @app.post("/restore", response_model=RestoreResponse)
 async def restore_endpoint(request: RestoreRequest):
     """
@@ -1281,6 +1078,8 @@ class AsyncCloneRequest(BaseModel):
     """Request model for async clone endpoint."""
 
     source_url: str
+    source_username: str
+    source_password: str
     customer_id: str
     ttl_minutes: int = 60
 
@@ -1306,10 +1105,12 @@ async def startup_event():
     from .warm_pool_controller import WarmPoolController
     import os
 
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        await init_job_store(database_url)
-        logger.info("Job store initialized for async endpoints")
+    # Use Redis for job store (not DATABASE_URL which is MySQL)
+    redis_url = os.getenv(
+        "REDIS_URL", "redis://redis-master.wordpress-staging.svc.cluster.local:6379/0"
+    )
+    await init_job_store(redis_url)
+    logger.info("Job store initialized for async endpoints")
 
     # Start warm pool controller
     warm_pool = WarmPoolController(namespace="wordpress-staging")

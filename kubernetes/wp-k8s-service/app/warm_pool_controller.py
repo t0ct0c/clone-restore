@@ -14,8 +14,9 @@ Usage:
 
 import asyncio
 from loguru import logger
-from kubernetes import client
+from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from kubernetes.stream import stream
 from typing import List, Optional, Dict
 import uuid
 import time
@@ -24,17 +25,18 @@ import time
 class WarmPoolController:
     def __init__(self, namespace: str = "wordpress-staging"):
         self.namespace = namespace
-        self.min_warm_pods = 1
-        self.max_warm_pods = 2
-        self.warm_label_selector = "pool-type=warm,pool-status=ready"
+        self.min_warm_pods = 2
+        self.max_warm_pods = 4
+        self.warm_label_selector = "pool-type=warm"
+
+        # Load in-cluster Kubernetes config
+        config.load_incluster_config()
         self.v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
 
         # Pod configuration
-        self.warm_pod_image = (
-            "wordpress:6.4-apache"  # Will be updated to optimized image
-        )
-        self.mysql_image = "mysql:8.0"
+        self.warm_pod_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:optimized-v13"
+        self.mysql_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/mysql:8.0"
         self.resources = {
             "requests": {"cpu": "250m", "memory": "512Mi"},
             "limits": {"cpu": "500m", "memory": "1Gi"},
@@ -45,16 +47,46 @@ class WarmPoolController:
         while True:
             try:
                 warm_pods = self._get_warm_pods()
-                available = len([p for p in warm_pods if self._is_pod_available(p)])
 
-                if available < self.min_warm_pods:
+                # Install WordPress in initializing pods that are running
+                for pod in warm_pods:
+                    status = pod.metadata.labels.get("pool-status", "")
+                    if status == "initializing" and self._is_pod_available(pod):
+                        pod_name = pod.metadata.name
+                        try:
+                            await self._install_wordpress_in_pod(pod_name)
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to install WordPress in {pod_name}: {e}"
+                            )
+
+                # Count total warm pods and ready pods separately
+                total_pods = len(warm_pods)
+                available = len(
+                    [
+                        p
+                        for p in warm_pods
+                        if p.metadata.labels.get("pool-status") == "ready"
+                    ]
+                )
+
+                if total_pods < self.min_warm_pods:
                     await self._create_warm_pod()
-                    logger.info(f"Created warm pod (pool size: {available + 1})")
+                    logger.info(
+                        f"Created warm pod (total: {total_pods + 1}, available: {available})"
+                    )
 
-                elif available > self.max_warm_pods:
-                    # Delete excess (oldest first)
-                    await self._delete_pod(warm_pods[0].metadata.name)
-                    logger.info(f"Deleted excess warm pod (pool size: {available - 1})")
+                elif total_pods > self.max_warm_pods:
+                    # Only delete if we have excess AND they're old (> 2 minutes)
+                    oldest = warm_pods[0]
+                    pod_age = (
+                        time.time() - oldest.metadata.creation_timestamp.timestamp()
+                    )
+                    if pod_age > 120:  # 2 minutes
+                        await self._delete_pod(oldest.metadata.name)
+                        logger.info(
+                            f"Deleted excess warm pod (total: {total_pods - 1})"
+                        )
 
                 await asyncio.sleep(30)  # Check every 30s
 
@@ -65,7 +97,9 @@ class WarmPoolController:
     async def assign_warm_pod(self, customer_id: str) -> Optional[str]:
         """Assign warm pod to clone, reset DB for new customer"""
         warm_pods = self._get_warm_pods()
-        available = [p for p in warm_pods if self._is_pod_available(p)]
+        available = [
+            p for p in warm_pods if p.metadata.labels.get("pool-status") == "ready"
+        ]
 
         if not available:
             logger.warning("No warm pods available")
@@ -79,12 +113,21 @@ class WarmPoolController:
         # Tag pod with customer_id
         await self._tag_pod(pod_name, customer_id)
 
+        # Rename credentials secret from warm pod to clone ID
+        await self._rename_secret(pod_name, customer_id)
+
         logger.info(f"Assigned warm pod {pod_name} to {customer_id}")
         return pod_name
 
     async def return_to_pool(self, pod_name: str):
         """Reset pod and return to warm pool after TTL"""
         try:
+            # Get clone-id before untagging (for secret cleanup)
+            pod = self.v1.read_namespaced_pod(pod_name, self.namespace)
+            clone_id = (
+                pod.metadata.labels.get("clone-id") if pod.metadata.labels else None
+            )
+
             # Clean database
             await self._reset_database(pod_name)
 
@@ -93,6 +136,10 @@ class WarmPoolController:
 
             # Remove customer labels
             await self._untag_pod(pod_name)
+
+            # Delete clone-specific secret if exists
+            if clone_id:
+                await self._delete_clone_secret(clone_id)
 
             # Mark as warm/ready
             await self._mark_pod_warm(pod_name)
@@ -112,11 +159,11 @@ class WarmPoolController:
         return pods.items
 
     def _is_pod_available(self, pod) -> bool:
-        """Check if pod is running and ready"""
+        """Check if pod is running and ready (regardless of pool-status)"""
         if pod.status.phase != "Running":
             return False
 
-        for condition in pod.status.conditions:
+        for condition in pod.status.conditions or []:
             if condition.type == "Ready" and condition.status == "True":
                 return True
         return False
@@ -153,6 +200,173 @@ class WarmPoolController:
         self.v1.create_namespaced_pod(namespace=self.namespace, body=pod)
         logger.info(f"Created warm pod: {pod_name}")
 
+    async def _install_wordpress_in_pod(self, pod_name: str):
+        """Install WordPress in warm pod using WP-CLI"""
+        logger.info(f"Installing WordPress in {pod_name}...")
+
+        # Get admin password from secret
+        try:
+            secret = self.v1.read_namespaced_secret(
+                f"{pod_name}-credentials", self.namespace
+            )
+            admin_password = self._from_base64(secret.data["wordpress-password"])
+            db_password = self._from_base64(secret.data["db-password"])
+        except Exception as e:
+            logger.error(f"Failed to get admin password: {e}")
+            return
+
+        # Download WP-CLI if not present
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "sh",
+                    "-c",
+                    "which wp || curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar && chmod +x wp-cli.phar && mv wp-cli.phar /usr/local/bin/wp",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except Exception as e:
+            logger.error(f"Failed to download WP-CLI: {e}")
+            return
+
+        # WordPress installation is handled by docker-entrypoint.sh
+        # Just activate the plugin (entrypoint already created wp-config.php and installed WP)
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "plugin",
+                    "install",
+                    "/plugin.zip",
+                    "--activate",
+                    "--force",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Activated plugin in warm pod {pod_name}")
+        except Exception as e:
+            logger.error(f"Failed to activate plugin: {e}")
+            return
+
+        # Set the plugin API key to a known value for warm pool
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "option",
+                    "update",
+                    "custom_migrator_api_key",
+                    "migration-master-key",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Set plugin API key for warm pod {pod_name}")
+        except Exception as e:
+            logger.error(f"Failed to set API key: {e}")
+
+        # Create wp-config.php first (required for WP-CLI commands)
+        try:
+            import base64
+
+            wp_config = f"""<?php
+define('DB_NAME', 'wordpress');
+define('DB_USER', 'wordpress');
+define('DB_PASSWORD', '{db_password}');
+define('DB_HOST', '127.0.0.1:3306');
+define('DB_CHARSET', 'utf8');
+define('DB_COLLATE', '');
+$table_prefix = 'wp_';
+define('WP_DEBUG', false);
+define('WP_SITEURL', 'http://{pod_name}.wordpress-staging.svc.cluster.local');
+define('WP_HOME', 'http://{pod_name}.wordpress-staging.svc.cluster.local');
+if ( ! defined( 'ABSPATH' ) ) {{
+    define( 'ABSPATH', __DIR__ . '/' );
+}}
+require_once ABSPATH . 'wp-settings.php';
+"""
+            encoded_config = base64.b64encode(wp_config.encode()).decode()
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "sh",
+                    "-c",
+                    f"echo '{encoded_config}' | base64 -d > /var/www/html/wp-config.php && chown www-data:www-data /var/www/html/wp-config.php",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Created wp-config.php for warm pod {pod_name}")
+        except Exception as e:
+            logger.error(f"Failed to create wp-config.php: {e}")
+            return
+
+        # Run WordPress installation via WP-CLI
+        install_commands = [
+            [
+                "wp",
+                "core",
+                "install",
+                f"--url=http://{pod_name}.wordpress-staging.svc.cluster.local",
+                "--title=My Awesome Website",
+                "--admin_user=admin",
+                f"--admin_password={admin_password}",
+                "--admin_email=admin@clones.betaweb.ai",
+                "--skip-email",
+            ],
+            ["wp", "plugin", "install", "/plugin.zip", "--activate", "--force"],
+        ]
+
+        for cmd in install_commands:
+            try:
+                stream(
+                    self.v1.connect_get_namespaced_pod_exec,
+                    name=pod_name,
+                    namespace=self.namespace,
+                    command=cmd,
+                    container="wordpress",
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                )
+                logger.info(f"Executed: {' '.join(cmd)}")
+            except Exception as e:
+                logger.error(f"WP-CLI command failed: {e}")
+                return
+
+        # Mark pod as ready
+        body = {"metadata": {"labels": {"pool-status": "ready"}}}
+        self.v1.patch_namespaced_pod(pod_name, self.namespace, body)
+        logger.info(f"WordPress installed in {pod_name}")
+
     def _create_warm_pod_spec(self, pod_name: str, db_password: str) -> client.V1Pod:
         """Create warm pod specification with WordPress + MySQL sidecar"""
 
@@ -167,6 +381,10 @@ class WarmPoolController:
                 },
             ),
             spec=client.V1PodSpec(
+                image_pull_secrets=[
+                    client.V1LocalObjectReference(name="ecr-registry-secret"),
+                    client.V1LocalObjectReference(name="dockerhub-secret"),
+                ],
                 containers=[
                     # WordPress container
                     client.V1Container(
@@ -189,16 +407,28 @@ class WarmPoolController:
                             ),
                         ],
                         resources=self.resources,
+                        # The import can make WP unresponsive for 30-60s
+                        # while it drops/recreates all tables and runs
+                        # search-replace.  Use generous thresholds so the
+                        # liveness probe does not kill the container mid-import.
                         liveness_probe=client.V1Probe(
                             http_get=client.V1HTTPGetAction(path="/", port=80),
-                            initial_delay_seconds=30,
+                            initial_delay_seconds=60,
                             period_seconds=10,
+                            timeout_seconds=5,
+                            failure_threshold=12,
                         ),
                         readiness_probe=client.V1Probe(
                             http_get=client.V1HTTPGetAction(path="/", port=80),
                             initial_delay_seconds=20,
                             period_seconds=5,
                         ),
+                        volume_mounts=[
+                            client.V1VolumeMount(
+                                name="wordpress-data",
+                                mount_path="/var/www/html",
+                            )
+                        ],
                     ),
                     # MySQL sidecar container
                     client.V1Container(
@@ -214,17 +444,26 @@ class WarmPoolController:
                         ],
                         resources=self.resources,
                         liveness_probe=client.V1Probe(
-                            exec=client.V1ExecAction(
-                                command=["mysqladmin", "ping", "-h127.0.0.1"]
+                            _exec=client.V1ExecAction(
+                                command=[
+                                    "sh",
+                                    "-c",
+                                    "mysqladmin ping -h127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD",
+                                ]
                             ),
                             initial_delay_seconds=30,
                             period_seconds=10,
                         ),
                         readiness_probe=client.V1Probe(
-                            exec=client.V1ExecAction(
-                                command=["mysqladmin", "ping", "-h127.0.0.1"]
+                            _exec=client.V1ExecAction(
+                                command=[
+                                    "sh",
+                                    "-c",
+                                    "mysqladmin ping -h127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD",
+                                ]
                             ),
-                            initial_delay_seconds=5,
+                            initial_delay_seconds=45,
+                            failure_threshold=12,
                             period_seconds=5,
                         ),
                         volume_mounts=[
@@ -236,8 +475,13 @@ class WarmPoolController:
                 ],
                 volumes=[
                     client.V1Volume(
-                        name="mysql-data", empty_dir=client.V1EmptyDirVolumeSource()
-                    )
+                        name="mysql-data",
+                        empty_dir=client.V1EmptyDirVolumeSource(),
+                    ),
+                    client.V1Volume(
+                        name="wordpress-data",
+                        empty_dir=client.V1EmptyDirVolumeSource(),
+                    ),
                 ],
             ),
         )
@@ -245,51 +489,415 @@ class WarmPoolController:
         return pod
 
     async def _reset_pod_database(self, pod_name: str, customer_id: str):
-        """Reset database for new customer"""
-        # Get password from secret
+        """Reset database for new customer via full wp core reinstall.
+
+        The docker-entrypoint.sh creates tables with wrong schemas (e.g.
+        ``CREATE TABLE wp_terms LIKE wp_posts``).  Neither TRUNCATE nor
+        ``wp site empty`` can fix broken schemas — they leave WordPress in an
+        unbootable state (missing wp_posts, wp_terms, etc.) which crashes
+        Apache and causes "Connection refused" on import.
+
+        The reliable fix is: ``wp db reset`` (drops all tables) followed by
+        ``wp core install`` (recreates them with correct schemas).  This adds
+        ~2-3 s to warm-pool assignment but guarantees a working WordPress.
+        """
+        logger.info(f"Starting database reset for pod {pod_name}")
         secret_name = f"{pod_name}-credentials"
         secret = self.v1.read_namespaced_secret(secret_name, self.namespace)
         db_password = self._from_base64(secret.data["db-password"])
+        wp_password = self._from_base64(secret.data["wordpress-password"])
 
-        commands = [
-            f"DROP DATABASE IF EXISTS wordpress",
-            f"CREATE DATABASE wordpress",
-            f"GRANT ALL ON wordpress.* TO 'wordpress'@'localhost' IDENTIFIED BY '{db_password}'",
-            "FLUSH PRIVILEGES",
-        ]
+        # Step 1: Write wp-config.php so WP-CLI can connect to the database.
+        await self._create_wp_config(pod_name, db_password)
 
-        for cmd in commands:
-            try:
-                self.v1.connect_get_namespaced_pod_exec(
-                    name=pod_name,
-                    namespace=self.namespace,
-                    command=["mysql", f"-p{db_password}", "-e", cmd],
-                    container="mysql",
-                )
-            except Exception as e:
-                logger.warning(f"Database reset command failed: {e}")
-
-        logger.info(f"Database reset for pod {pod_name}")
-
-    async def _reset_database(self, pod_name: str):
-        """Drop and recreate WordPress database"""
-        secret_name = f"{pod_name}-credentials"
-        secret = self.v1.read_namespaced_secret(secret_name, self.namespace)
-        db_password = self._from_base64(secret.data["db-password"])
-
-        commands = [
-            "DROP DATABASE IF EXISTS wordpress",
-            "CREATE DATABASE wordpress",
-            "FLUSH PRIVILEGES",
-        ]
-
-        for cmd in commands:
-            self.v1.connect_get_namespaced_pod_exec(
+        # Step 2: Drop ALL tables — clean slate.
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
                 name=pod_name,
                 namespace=self.namespace,
-                command=["mysql", f"-p{db_password}", "-e", cmd],
-                container="mysql",
+                command=["wp", "db", "reset", "--yes", "--allow-root"],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
             )
+            logger.info(f"wp db reset completed for pod {pod_name}")
+        except Exception as e:
+            logger.warning(f"wp db reset failed: {e}")
+
+        # Step 3: Reinstall WordPress core (creates all tables correctly).
+        site_url = f"http://{pod_name}.wordpress-staging.svc.cluster.local"
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "core",
+                    "install",
+                    f"--url={site_url}",
+                    "--title=WordPress Clone",
+                    "--admin_user=admin",
+                    f"--admin_password={wp_password}",
+                    "--admin_email=admin@clones.betaweb.ai",
+                    "--skip-email",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"wp core install completed for pod {pod_name}")
+        except Exception as e:
+            logger.error(f"wp core install failed: {e}")
+
+        # Step 4: Install and activate plugin, set API key.
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "plugin",
+                    "install",
+                    "/plugin.zip",
+                    "--activate",
+                    "--force",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Plugin installed and activated in pod {pod_name}")
+        except Exception as e:
+            logger.warning(f"Plugin install failed: {e}")
+
+        # Step 4b: Create uploads directory and plugin temp directory.
+        # wp core install does NOT create wp-content/uploads, so the import
+        # plugin's download_archive() fails with "Destination directory …
+        # does not exist or is not writable" when it tries to stream
+        # the archive into wp-content/uploads/custom-migrator/tmp/.
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "bash",
+                    "-c",
+                    "mkdir -p /var/www/html/wp-content/uploads/custom-migrator/tmp && "
+                    "chown -R www-data:www-data /var/www/html/wp-content/uploads",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Created uploads directory in pod {pod_name}")
+        except Exception as e:
+            logger.warning(f"Failed to create uploads directory: {e}")
+
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "option",
+                    "update",
+                    "custom_migrator_api_key",
+                    "migration-master-key",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to set API key: {e}")
+
+        # Step 5: Enable import on this target clone
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "option",
+                    "update",
+                    "custom_migrator_import_enabled",
+                    "1",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to enable import: {e}")
+
+        # Step 6: Verify WordPress is serving HTTP requests.
+        await self._verify_wordpress_health(pod_name)
+
+        logger.info(f"Database reset complete for pod {pod_name}")
+
+    async def _create_wp_config(self, pod_name: str, db_password: str):
+        """Create wp-config.php in warm pod after database reset"""
+        try:
+            # Get pod IP for WP_HOME and WP_SITEURL
+            pod = self.v1.read_namespaced_pod(pod_name, self.namespace)
+            pod_ip = pod.status.pod_ip
+
+            wp_config = f"""<?php
+define('DB_NAME', 'wordpress');
+define('DB_USER', 'wordpress');
+define('DB_PASSWORD', '{db_password}');
+define('DB_HOST', '127.0.0.1:3306');
+define('DB_CHARSET', 'utf8');
+define('DB_COLLATE', '');
+$table_prefix = 'wp_';
+define('WP_DEBUG', false);
+define('WP_SITEURL', 'http://{pod_ip}');
+define('WP_HOME', 'http://{pod_ip}');
+if ( ! defined( 'ABSPATH' ) ) {{
+    define( 'ABSPATH', __DIR__ . '/' );
+}}
+require_once ABSPATH . 'wp-settings.php';
+"""
+
+            # Write wp-config.php via k8s exec
+            import base64
+
+            encoded_config = base64.b64encode(wp_config.encode()).decode()
+
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "sh",
+                    "-c",
+                    f"echo '{encoded_config}' | base64 -d > /var/www/html/wp-config.php && chown www-data:www-data /var/www/html/wp-config.php",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Created wp-config.php for pod {pod_name}")
+        except Exception as e:
+            logger.error(f"Failed to create wp-config.php: {e}")
+
+    async def _activate_plugin_in_pod(self, pod_name: str):
+        """Activate custom-migrator plugin using WP-CLI"""
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=["wp", "plugin", "activate", "custom-migrator", "--allow-root"],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"Re-activated plugin in pod {pod_name}")
+        except Exception as e:
+            logger.error(f"Failed to activate plugin: {e}")
+
+    async def _reset_database(self, pod_name: str):
+        """Reset WordPress database via full reinstall for warm pool reuse.
+
+        Uses ``wp db reset`` + ``wp core install`` to guarantee all tables
+        exist with correct schemas.  This is the same strategy as
+        ``_reset_pod_database`` — see its docstring for rationale.
+        """
+        secret_name = f"{pod_name}-credentials"
+        secret = self.v1.read_namespaced_secret(secret_name, self.namespace)
+        db_password = self._from_base64(secret.data["db-password"])
+        wp_password = self._from_base64(secret.data["wordpress-password"])
+
+        # Write wp-config.php first
+        await self._create_wp_config(pod_name, db_password)
+
+        # Drop all tables
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=["wp", "db", "reset", "--yes", "--allow-root"],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"wp db reset completed for {pod_name}")
+        except Exception as e:
+            logger.warning(f"wp db reset failed for {pod_name}: {e}")
+
+        # Reinstall WordPress core
+        site_url = f"http://{pod_name}.wordpress-staging.svc.cluster.local"
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "core",
+                    "install",
+                    f"--url={site_url}",
+                    "--title=WordPress Clone",
+                    "--admin_user=admin",
+                    f"--admin_password={wp_password}",
+                    "--admin_email=admin@clones.betaweb.ai",
+                    "--skip-email",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+            logger.info(f"wp core install completed for {pod_name}")
+        except Exception as e:
+            logger.error(f"wp core install failed for {pod_name}: {e}")
+
+        # Reinstall and activate plugin, set API key
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "plugin",
+                    "install",
+                    "/plugin.zip",
+                    "--activate",
+                    "--force",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except Exception as e:
+            logger.warning(f"Plugin install failed for {pod_name}: {e}")
+
+        # Create uploads directory (wp core install doesn't create it)
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "bash",
+                    "-c",
+                    "mkdir -p /var/www/html/wp-content/uploads/custom-migrator/tmp && "
+                    "chown -R www-data:www-data /var/www/html/wp-content/uploads",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create uploads dir for {pod_name}: {e}")
+
+        try:
+            stream(
+                self.v1.connect_get_namespaced_pod_exec,
+                name=pod_name,
+                namespace=self.namespace,
+                command=[
+                    "wp",
+                    "option",
+                    "update",
+                    "custom_migrator_api_key",
+                    "migration-master-key",
+                    "--allow-root",
+                ],
+                container="wordpress",
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to reset API key for {pod_name}: {e}")
+
+    async def _verify_wordpress_health(
+        self, pod_name: str, retries: int = 5, delay: float = 2.0
+    ):
+        """Verify WordPress is responding to HTTP requests after a reset.
+
+        Runs curl inside the wordpress container to confirm Apache + PHP are
+        serving pages.  This catches the exact failure mode where a bad DB
+        reset crashes Apache and leaves the pod in a Connection-refused state.
+        """
+        for attempt in range(1, retries + 1):
+            try:
+                result = stream(
+                    self.v1.connect_get_namespaced_pod_exec,
+                    name=pod_name,
+                    namespace=self.namespace,
+                    command=[
+                        "sh",
+                        "-c",
+                        "curl -sf -o /dev/null -w '%{http_code}' http://localhost/ || echo 'FAIL'",
+                    ],
+                    container="wordpress",
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                )
+                result_str = str(result).strip()
+                if "200" in result_str or "301" in result_str or "302" in result_str:
+                    logger.info(
+                        f"WordPress health check passed for {pod_name} (attempt {attempt})"
+                    )
+                    return True
+                logger.warning(
+                    f"WordPress health check returned {result_str} for {pod_name} (attempt {attempt})"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"WordPress health check failed for {pod_name} (attempt {attempt}): {e}"
+                )
+
+            if attempt < retries:
+                await asyncio.sleep(delay)
+
+        logger.error(
+            f"WordPress health check FAILED after {retries} attempts for {pod_name}"
+        )
+        return False
 
     async def _clean_filesystem(self, pod_name: str):
         """Clean WordPress uploads and cache"""
@@ -297,15 +905,22 @@ class WarmPoolController:
             "rm -rf /var/www/html/wp-content/uploads/*",
             "rm -rf /var/www/html/wp-content/cache/*",
             "rm -rf /var/www/html/wp-content/debug.log",
+            "chown -R www-data:www-data /var/www/html/wp-content/uploads",
+            "chmod 755 /var/www/html/wp-content/uploads",
         ]
 
         for cmd in commands:
             try:
-                self.v1.connect_get_namespaced_pod_exec(
+                stream(
+                    self.v1.connect_get_namespaced_pod_exec,
                     name=pod_name,
                     namespace=self.namespace,
                     command=["sh", "-c", cmd],
                     container="wordpress",
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
                 )
             except Exception as e:
                 logger.warning(f"Filesystem cleanup failed: {e}")
@@ -323,6 +938,45 @@ class WarmPoolController:
         }
         self.v1.patch_namespaced_pod(pod_name, self.namespace, body)
 
+    async def _rename_secret(self, old_name: str, customer_id: str):
+        """Rename credentials secret from warm pod name to clone ID"""
+        old_secret_name = f"{old_name}-credentials"
+        new_secret_name = f"{customer_id}-credentials"
+
+        try:
+            # Get old secret
+            old_secret = self.v1.read_namespaced_secret(old_secret_name, self.namespace)
+
+            # Create new secret with clone ID
+            new_secret = client.V1Secret(
+                metadata=client.V1ObjectMeta(
+                    name=new_secret_name,
+                    namespace=self.namespace,
+                    labels={"clone-id": customer_id, "app": "wordpress-clone"},
+                ),
+                data=old_secret.data,
+            )
+
+            self.v1.create_namespaced_secret(self.namespace, new_secret)
+
+            # Delete old secret
+            self.v1.delete_namespaced_secret(old_secret_name, self.namespace)
+
+            logger.info(f"Renamed secret {old_secret_name} -> {new_secret_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to rename secret: {e}")
+
+    async def _delete_clone_secret(self, clone_id: str):
+        """Delete clone-specific credentials secret"""
+        secret_name = f"{clone_id}-credentials"
+        try:
+            self.v1.delete_namespaced_secret(secret_name, self.namespace)
+            logger.info(f"Deleted clone secret: {secret_name}")
+        except ApiException as e:
+            if e.status != 404:
+                logger.warning(f"Failed to delete secret {secret_name}: {e}")
+
     async def _untag_pod(self, pod_name: str):
         """Remove customer labels from pod"""
         body = {
@@ -333,6 +987,12 @@ class WarmPoolController:
             }
         }
         self.v1.patch_namespaced_pod(pod_name, self.namespace, body)
+
+    async def _mark_pod_ready(self, pod_name: str):
+        """Mark initializing pod as ready"""
+        body = {"metadata": {"labels": {"pool-status": "ready"}}}
+        self.v1.patch_namespaced_pod(pod_name, self.namespace, body)
+        logger.info(f"Marked pod {pod_name} as ready")
 
     async def _mark_pod_warm(self, pod_name: str):
         """Mark pod as warm/ready"""

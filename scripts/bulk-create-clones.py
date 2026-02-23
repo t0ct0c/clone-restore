@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Bulk Clone Creator - Creates 100 WordPress clones for load testing
+Bulk Clone Creator - Creates 50 WordPress clones for load testing
 Uses async v2 API with job status polling
-Outputs: Clone URLs, job IDs, and creation times
+Outputs: Clone URLs, credentials, job IDs, and creation times
 """
 
 import requests
@@ -17,7 +17,7 @@ API_HOST_HEADER = "api.clones.betaweb.ai"
 SOURCE_URL = "https://betaweb.ai"
 SOURCE_USERNAME = "Charles@toctoc.com.au"
 SOURCE_PASSWORD = "6(4b`Nde1i_D"
-CLONE_COUNT = 100
+CLONE_COUNT = 50
 TTL_MINUTES = 30
 POLL_INTERVAL = 10  # Check job status every 10 seconds
 
@@ -76,10 +76,57 @@ def poll_job_status(job_id: str) -> Dict:
         return {"status": "error", "error": str(e)}
 
 
+def get_clone_credentials(clone_id: str, retries: int = 5) -> Dict:
+    """Fetch credentials from Kubernetes secret with retry"""
+    import subprocess
+    import base64
+
+    for attempt in range(retries):
+        try:
+            result = subprocess.run(
+                [
+                    "kubectl",
+                    "get",
+                    "secret",
+                    f"{clone_id}-credentials",
+                    "-n",
+                    "wordpress-staging",
+                    "-o",
+                    "jsonpath={.data}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout:
+                data = json.loads(result.stdout)
+                return {
+                    "wordpress_username": base64.b64decode(
+                        data.get("wordpress-username", "")
+                    ).decode()
+                    if data.get("wordpress-username")
+                    else "admin",
+                    "wordpress_password": base64.b64decode(
+                        data.get("wordpress-password", "")
+                    ).decode()
+                    if data.get("wordpress-password")
+                    else "N/A",
+                    "api_key": base64.b64decode(data.get("api-key", "")).decode()
+                    if data.get("api-key")
+                    else "",
+                }
+        except Exception as e:
+            pass
+        if attempt < retries - 1:
+            time.sleep(2)
+    return {"wordpress_username": "admin", "wordpress_password": "N/A", "api_key": ""}
+
+
 def main():
     print(f"\n{'=' * 80}")
-    print(f"BULK CLONE CREATOR - 100 WordPress Clones")
+    print(f"BULK CLONE CREATOR - {CLONE_COUNT} WordPress Clones (Phase 2 Optimized)")
     print(f"TTL: {TTL_MINUTES} minutes (auto-cleanup)")
+    print(f"Features: Parallel execution + Warm pool + Redis caching")
     print(f"{'=' * 80}\n")
 
     # Phase 1: Submit all clone jobs
@@ -138,9 +185,15 @@ def main():
 
             if job_status == "completed" and result.get("status") != "completed":
                 completed_count += 1
-                print(
-                    f"  ✓ {result['clone_id']} COMPLETED - {status.get('result', {}).get('public_url', 'N/A')}"
-                )
+                result_data = status.get("result", {})
+                public_url = result_data.get("public_url", "N/A")
+                print(f"  ✓ {result['clone_id']} COMPLETED - {public_url}")
+                # Fetch credentials from Kubernetes secret
+                creds = get_clone_credentials(result["clone_id"])
+                results[idx]["wordpress_username"] = creds["wordpress_username"]
+                results[idx]["wordpress_password"] = creds["wordpress_password"]
+                results[idx]["api_key"] = creds["api_key"]
+                results[idx]["public_url"] = public_url
             elif job_status == "failed" and result.get("status") != "failed":
                 failed_count += 1
                 print(
@@ -174,15 +227,32 @@ def main():
     print(
         f"Success Rate: {round((status_counts['completed'] / CLONE_COUNT) * 100, 1)}%"
     )
+    avg_time = (
+        round(total_time / status_counts["completed"], 2)
+        if status_counts["completed"] > 0
+        else 0
+    )
+    print(f"Average Clone Time: {avg_time}s")
     print(f"{'=' * 80}\n")
 
-    # Print all successful clone URLs
+    # Print all successful clone URLs with credentials
     successful_clones = [r for r in results if r.get("status") == "completed"]
     if successful_clones:
-        print(f"SUCCESSFUL CLONE URLs (copy these):")
+        print(f"SUCCESSFUL CLONES - URLs and Credentials:")
         print(f"{'=' * 80}")
         for r in successful_clones:
-            print(r["url"])
+            print(f"\nClone: {r['clone_id']}")
+            print(f"  URL:      {r['url']}")
+            print(f"  Username: {r.get('wordpress_username', 'admin')}")
+            print(f"  Password: {r.get('wordpress_password', 'N/A')}")
+            print(f"  API Key:  {r.get('api_key', 'N/A')}")
+        print(f"\n{'=' * 80}")
+        print(f"\nHOW TO ACCESS CLONES:")
+        print(
+            f"  1. Open browser to any URL above (e.g., https://load-test-001.clones.betaweb.ai)"
+        )
+        print(f"  2. Login with WordPress credentials shown above")
+        print(f"  3. Admin panel: https://<clone_id>.clones.betaweb.ai/wp-admin")
         print(f"{'=' * 80}\n")
 
     # Save full results
