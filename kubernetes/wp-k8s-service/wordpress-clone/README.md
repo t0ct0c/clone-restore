@@ -6,7 +6,6 @@ Optimized WordPress image for fast clone provisioning with pre-installed custom-
 
 - WordPress 6.4 with Apache
 - MySQL client for health checks
-- Custom-migrator plugin pre-installed
 - Warm pool mode support (skip initialization)
 - MySQL sidecar compatibility (localhost:3306)
 

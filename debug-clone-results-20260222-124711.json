@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "clone_id": "debug-creds-001",
+      "job_id": "0029110a-7822-4c7d-9138-964934ab8d35",
+      "status": "completed",
+      "url": "https://debug-creds-001.clones.betaweb.ai",
+      "wordpress_username": "admin",
+      "wordpress_password": "N/A",
+      "api_key": ""
+    }
+  ]
+}

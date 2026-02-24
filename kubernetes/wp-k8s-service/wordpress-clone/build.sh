@@ -3,6 +3,7 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 AWS_ACCOUNT_ID="044514005641"
 AWS_REGION="us-east-1"
 IMAGE_NAME="wp-k8s-service-clone"
@@ -10,7 +11,7 @@ IMAGE_TAG="optimized-$(date +%Y%m%d-%H%M%S)"
 ECR_REPO="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/${IMAGE_NAME}"
 
 echo "=== Building WordPress Clone Image ==="
-cd kubernetes/wp-k8s-service/wordpress-clone
+cd "$SCRIPT_DIR"
 
 # Build Docker image
 docker build -t ${ECR_REPO}:${IMAGE_TAG} .
