@@ -99,20 +99,28 @@ def cleanup_expired_clones():
 
     # Also check for orphaned pods with ttl-expires-at label
     # (pods whose deployments were already deleted)
+    logger.info("Checking for orphaned pods with ttl-expires-at label...")
     pods = core_api.list_namespaced_pod(
         namespace=namespace, label_selector="app=wordpress-clone,ttl-expires-at"
+    )
+    logger.info(
+        f"Found {len(pods.items)} pods with app=wordpress-clone,ttl-expires-at labels"
     )
 
     for pod in pods.items:
         name = pod.metadata.name
+        logger.info(f"  Evaluating pod: {name}")
+
         # Skip if this pod belongs to an existing deployment
         owner_refs = pod.metadata.owner_references or []
         if owner_refs:
+            logger.info(f"    Skipping {name} - has owner references")
             continue
 
         # Check for ttl-expires-at label
         ttl_label = pod.metadata.labels.get("ttl-expires-at")
         if not ttl_label:
+            logger.info(f"    Skipping {name} - no ttl-expires-at label")
             continue
 
         try:
