@@ -13,9 +13,9 @@ API_BASE = "https://clones.betaweb.ai"
 API_HOST = "clones.betaweb.ai"
 
 # Source (clone or regular WordPress site)
-SOURCE_URL = "https://restore-test-clone.clones.betaweb.ai/"  # Change to your clone URL
+SOURCE_URL = "https://e2e-restore-test.clones.betaweb.ai/"  # Change to your clone URL
 SOURCE_USERNAME = "admin"
-SOURCE_PASSWORD = "Gtj2dWQS0GkyCgRZ9ac4tHknW6B0CchL"  # Change to your clone password
+SOURCE_PASSWORD = "WpNKQBnBCk6obYXo4pcqCzJZtNLjRWk4"  # Change to your clone password
 
 # Target (production site)
 TARGET_URL = "https://betaweb.ai/"  # Change to your target URL

@@ -178,7 +178,7 @@ async def clone_wordpress(job_id: str) -> Dict:
                 logger.error(f"Failed to return pod to warm pool: {e}")
 
 
-@dramatiq.actor(queue_name="default", max_retries=0, time_limit=600_000)
+@dramatiq.actor(queue_name="clone-queue", max_retries=0, time_limit=600_000)
 async def restore_wordpress(job_id: str) -> Dict:
     """Restore WordPress site asynchronously."""
     from .browser_setup import setup_wordpress_with_browser
