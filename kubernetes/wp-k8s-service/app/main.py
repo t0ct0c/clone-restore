@@ -823,9 +823,15 @@ async def create_app_password_endpoint(request: CreateAppPasswordRequest):
     return CreateAppPasswordResponse(**result)
 
 
-@app.post("/restore", response_model=RestoreResponse)
+@app.post("/restore", response_model=RestoreResponse, deprecated=True)
 async def restore_endpoint(request: RestoreRequest):
     """
+    [DEPRECATED] Synchronous restore endpoint. Use /api/v2/restore instead.
+
+    This endpoint is maintained for backward compatibility but will be removed
+    in a future version. Please migrate to the async endpoint for better UX,
+    progress tracking, and no timeout risks.
+
     Restore WordPress from staging/backup to production with selective preservation.
 
     By default:
@@ -833,6 +839,9 @@ async def restore_endpoint(request: RestoreRequest):
     - Restores themes from staging (to deploy design changes)
     - Restores database and uploads from staging
     """
+    logger.warning(
+        "Legacy sync /restore endpoint called - recommend using /api/v2/restore"
+    )
     logger.info(f"Restore requested: {request.source.url} -> {request.target.url}")
     logger.info(
         f"Options: preserve_plugins={request.preserve_plugins}, preserve_themes={request.preserve_themes}"
@@ -1084,6 +1093,25 @@ class AsyncCloneRequest(BaseModel):
     ttl_minutes: int = 60
 
 
+class AsyncRestoreRequest(BaseModel):
+    """Request model for async restore endpoint."""
+
+    source_url: str
+    source_username: str
+    source_password: str
+    target_url: str
+    target_username: str
+    target_password: str
+    preserve_plugins: bool = Field(
+        True, description="Preserve production plugin updates"
+    )
+    preserve_themes: bool = Field(
+        False,
+        description="Preserve production themes (default: false, restore from staging)",
+    )
+    customer_id: Optional[str] = None  # Auto-generate if not provided
+
+
 class JobStatusResponse(BaseModel):
     """Response model for job status endpoint."""
 
@@ -1132,6 +1160,27 @@ async def clone_async(request: AsyncCloneRequest):
     )
     clone_wordpress.send(job.job_id)
     logger.info(f"Enqueued async clone job {job.job_id}")
+    return JobStatusResponse(**job.to_dict())
+
+
+@app.post("/api/v2/restore", response_model=JobStatusResponse, tags=["Async V2"])
+async def restore_async(request: AsyncRestoreRequest):
+    """Restore WordPress asynchronously (non-blocking)."""
+    from .tasks import restore_wordpress
+    from .job_store import get_job_store, JobType
+    from datetime import datetime
+
+    # Generate customer_id if not provided
+    if not request.customer_id:
+        request.customer_id = f"restore-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    job_store = get_job_store()
+    job = await job_store.create_job(
+        job_type=JobType.restore,
+        request_payload=request.dict(),
+    )
+    restore_wordpress.send(job.job_id)
+    logger.info(f"Enqueued async restore job {job.job_id}")
     return JobStatusResponse(**job.to_dict())
 
 
