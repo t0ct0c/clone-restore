@@ -1,54 +1,66 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-02-25
+**Last Updated**: 2026-02-25 22:40 UTC
 
-## CURRENT BRANCH: feat/kubernetes-restore (NEW - branched from feat/kubernetes)
-**Status**: Async Restore Implementation Complete - Ready for Testing
+## CURRENT BRANCH: feat/kubernetes-restore
+**Status**: Bug Fixes Complete - Paused for user return
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Commit**: feat: implement async restore endpoint with progress tracking (8bc0ccb)
+**Last Deployed**: wp-k8s-service:use-working-image-20260225-223634
 
-### Recent Branch Activity (2026-02-25)
-**Current Work**: feat/kubernetes-restore (implementing async /api/v2/restore endpoint)
-**Parent Branch**: feat/kubernetes (production ready with 55s clone times)
-**Previous Merge**: feat/optimization → feat/kubernetes on 2026-02-25
+### ⚠️ CRITICAL CONTEXT - READ THIS FIRST
+**Original Goal**: Implement async restore endpoint (NOT fix clone creation)
+**What Happened**: Discovered two critical bugs while working on restore:
+1. ✅ **TTL Cleaner Bug** - Services/Ingresses/Secrets not being cleaned up (FIXED)
+2. ✅ **Cold Provision Bug** - Using wrong WordPress image (FIXED)
+
+**Key Lesson Learned**: Stop building new Docker images. Use existing working images.
+- **Working Image**: `optimized-v14` (has custom-migrator plugin installed & activated)
+- **Warm Pool**: Already using optimized-v14 successfully
+- **Cold Provision**: Now fixed to use optimized-v14 (was using wrong sqlite image)
 
 ### Branch Status
-**Active Branch**: feat/kubernetes-restore ← CURRENT WORK HERE
-**Stable Branch**: feat/kubernetes (production ready, not deleted)
-**Remote Branches** (still exist on origin):
-- origin/feat/restore - can be deleted if no longer needed
-- All other feature branches remain on remote
+**Active Branch**: feat/kubernetes-restore ← PAUSED HERE (user stepping away)
+**Parent Branch**: feat/kubernetes (has working clone creation with optimized-v14)
+**Next Step**: Test cold provision with fixed image, then continue restore implementation
 
-## Current Status Summary (feat/kubernetes-restore branch - Kubernetes Architecture)
+## Recent Session Summary (2026-02-25 afternoon)
 
-### 🎯 Active Development - Async Restore Implementation (NEW - Feb 25, 2026)
-**Current Goal**: Implement async restore endpoint matching async clone pattern
-**Status**: Implementation Complete - Ready for User Testing
+### What We Fixed
+1. **TTL Cleaner** (✅ COMPLETE):
+   - Added `ttl-expires-at` labels to Services, Ingresses, Secrets
+   - Updated TTL cleaner to delete all resources when pods expire
+   - Cleaned up 17 orphaned services, 7 ingresses, 36 secrets
+   - Deployed: committed to feat/kubernetes-restore
 
-**Implementation Complete**:
+2. **WordPress Image Issue** (✅ COMPLETE):
+   - Problem: Cold provision was using wrong image (wordpress-target-sqlite:latest)
+   - Solution: Updated k8s_provisioner.py to use optimized-v14 (same as warm pool)
+   - Removed unnecessary WP-CLI plugin activation code (plugin already active in image)
+   - Deployed: wp-k8s-service:use-working-image-20260225-223634
+
+### What NOT to Do
+- ❌ Don't build new WordPress clone images - optimized-v14 works
+- ❌ Don't modify docker-entrypoint.sh - it's working as-is
+- ❌ Don't add WP-CLI plugin activation - plugin already activated in image
+- ✅ Always check what's working first before creating new solutions
+
+### Restore Implementation Status
 - ✅ Created `POST /api/v2/restore` endpoint (returns job_id immediately)
 - ✅ Created `restore_wordpress()` Dramatiq task with progress tracking
-- ✅ Marked old `/restore` endpoint as deprecated (backward compatible)
-- ✅ Added comprehensive OpenSpec documentation
-- ✅ Created test script and testing guide (TEST_SCENARIO.md)
-- ✅ Built and deployed Docker image: `wp-k8s-service:bugfix-20260225-112952`
-- ⏳ **Awaiting User Testing**: Need to run test scenario to verify end-to-end workflow
-
-**Previous Achievements (feat/kubernetes branch)**:
-- ✅ **Phase 1**: Local MySQL sidecars + Warm pool system (3-pod pool)
-- ✅ **Phase 2**: Parallel execution in clone creation workflow
-- ✅ **Performance**: 55 seconds for clone creation (down from 5+ minutes)
-- ✅ **Testing**: Complete with bug fixes deployed
+- ✅ Test scripts ready (scripts/restore-single.py, TEST_SCENARIO.md)
+- ⏳ **NOT YET TESTED** - This is the actual goal, paused due to clone bug discovery
 
 ### 🏗️ Current Infrastructure (Kubernetes on EKS)
 - **EKS Cluster**: `wp-clone-restore` in us-east-1
-- **Warm Pool**: 3 WordPress pods (`wordpress-warm-*`) ready for instant assignment
-- **Service**: `wp-k8s-service` (FastAPI + Dramatiq) - deployed and healthy
+- **Namespace**: `wordpress-staging`
+- **wp-k8s-service**: `use-working-image-20260225-223634` (2 pods running)
+- **dramatiq-worker**: `use-working-image-20260225-223634` (same deployment)
+- **Warm Pool**: 2 WordPress pods using `optimized-v14` image (✅ working, has plugin)
 - **Redis**: Master pod running for async job queue
-- **TTL Cleaner**: CronJob executing every 5 minutes
+- **TTL Cleaner**: CronJob executing every 5 minutes (✅ now cleans all resources)
 - **Ingress**: Traefik for unlimited subdomain-based routing
 - **Domain**: `clones.betaweb.ai` (subdomain routing: `clone-id.clones.betaweb.ai`)
-- **Test Clones**: load-test-002, test-https-fix, test-script-001, test-ttl-fix-2
+- **WordPress Image**: `optimized-v14` (warm pool + cold provision both use this now)
 
 ### 📋 Testing Scripts Available
 - **scripts/clone-single.py**: Test single clone creation with timing

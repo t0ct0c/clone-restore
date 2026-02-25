@@ -44,7 +44,7 @@ class K8sProvisioner:
         # Configuration from environment variables
         self.docker_image = os.getenv(
             "WORDPRESS_IMAGE",
-            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:plugin-autoinstall-20260225-221232",
+            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:optimized-v14",
         )
         self.traefik_dns = os.getenv("TRAEFIK_DNS", "clones.betaweb.ai")
 
@@ -193,9 +193,6 @@ class K8sProvisioner:
             # Create Service and Ingress
             self._create_service(customer_id)
             self._create_ingress(customer_id)
-
-            # Activate the custom-migrator plugin via WP-CLI
-            self._activate_plugin_via_wpcli(customer_id)
 
             logger.info(f"Cold provision complete for {customer_id}")
 
