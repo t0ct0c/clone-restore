@@ -94,5 +94,18 @@ else
     echo "WordPress already installed"
 fi
 
+# Install custom-migrator plugin if not already present
+if [[ ! -d /var/www/html/wp-content/plugins/custom-migrator ]] && [[ -f /plugin.zip ]]; then
+    echo "Installing custom-migrator plugin..."
+    wp plugin install /plugin.zip --activate --allow-root --path=/var/www/html
+    echo "custom-migrator plugin installed and activated"
+elif [[ -d /var/www/html/wp-content/plugins/custom-migrator ]]; then
+    echo "custom-migrator plugin already exists"
+    # Ensure it's activated
+    wp plugin activate custom-migrator --allow-root --path=/var/www/html 2>/dev/null || true
+else
+    echo "WARNING: /plugin.zip not found, custom-migrator plugin not installed"
+fi
+
 echo "Starting Apache in foreground..."
 exec apache2-foreground

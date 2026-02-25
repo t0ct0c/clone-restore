@@ -44,7 +44,7 @@ class K8sProvisioner:
         # Configuration from environment variables
         self.docker_image = os.getenv(
             "WORDPRESS_IMAGE",
-            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:with-wpcli-20260225-215020",
+            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:plugin-autoinstall-20260225-221232",
         )
         self.traefik_dns = os.getenv("TRAEFIK_DNS", "clones.betaweb.ai")
 
@@ -1133,6 +1133,7 @@ class K8sProvisioner:
     def _activate_plugin_via_wpcli(self, customer_id: str) -> bool:
         """Activate custom-migrator plugin via WP-CLI in the pod"""
         try:
+            import time
             from kubernetes.stream import stream
 
             logger.info(f"Activating custom-migrator plugin for {customer_id}")
@@ -1148,6 +1149,87 @@ class K8sProvisioner:
 
             pod_name = pods.items[0].metadata.name
             container_name = "wordpress"  # Main WordPress container
+
+            # Wait for WordPress database to be ready (retry up to 30 seconds)
+            logger.info(f"Waiting for WordPress database to be ready for {customer_id}")
+            max_retries = 30
+            retry_interval = 1
+
+            for attempt in range(max_retries):
+                try:
+                    # Test DB connection via WP-CLI
+                    test_command = [
+                        "wp",
+                        "db",
+                        "check",
+                        "--path=/var/www/html",
+                        "--allow-root",
+                    ]
+
+                    test_resp = stream(
+                        self.core_api.connect_get_namespaced_pod_exec,
+                        pod_name,
+                        self.namespace,
+                        container=container_name,
+                        command=test_command,
+                        stderr=True,
+                        stdin=False,
+                        stdout=True,
+                        tty=False,
+                    )
+
+                    if (
+                        "Success" in test_resp
+                        or "database is ready" in test_resp.lower()
+                    ):
+                        logger.info(
+                            f"Database ready for {customer_id} after {attempt + 1} attempts"
+                        )
+                        break
+                except Exception as e:
+                    logger.debug(
+                        f"Database check attempt {attempt + 1}/{max_retries} failed: {e}"
+                    )
+
+                if attempt < max_retries - 1:
+                    time.sleep(retry_interval)
+            else:
+                logger.warning(
+                    f"Database may not be ready after {max_retries} attempts, proceeding anyway"
+                )
+
+            # Install WordPress core (required for cold-provisioned clones)
+            logger.info(f"Installing WordPress for {customer_id}")
+            install_command = [
+                "wp",
+                "core",
+                "install",
+                "--url=http://localhost",
+                "--title=Temporary Clone",
+                "--admin_user=admin",
+                "--admin_password=admin123",
+                "--admin_email=admin@example.com",
+                "--path=/var/www/html",
+                "--allow-root",
+                "--skip-email",
+            ]
+
+            try:
+                install_resp = stream(
+                    self.core_api.connect_get_namespaced_pod_exec,
+                    pod_name,
+                    self.namespace,
+                    container=container_name,
+                    command=install_command,
+                    stderr=True,
+                    stdin=False,
+                    stdout=True,
+                    tty=False,
+                )
+
+                logger.info(f"WordPress installation output: {install_resp}")
+            except Exception as e:
+                logger.warning(f"WordPress installation may have failed: {e}")
 
             # Activate plugin via WP-CLI
             exec_command = [
