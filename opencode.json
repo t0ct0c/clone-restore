@@ -39,6 +39,14 @@
       "type": "local",
       "command": ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"],
       "enabled": true
+    },
+    "traefik": {
+      "type": "local",
+      "command": ["/tmp/treafik-mcp/.venv/bin/traefik-mcp"],
+      "enabled": true,
+      "environment": {
+        "TRAEFIK_API_URL": "http://localhost:9080"
+      }
     }
   }
 }

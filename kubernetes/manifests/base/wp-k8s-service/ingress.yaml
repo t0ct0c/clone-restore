@@ -79,3 +79,10 @@ spec:
             name: wp-k8s-service
             port:
               number: 80
+      - path: /api/v2/restore
+        pathType: Prefix
+        backend:
+          service:
+            name: wp-k8s-service
+            port:
+              number: 80
