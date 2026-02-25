@@ -2,30 +2,43 @@
 
 **Last Updated**: 2026-02-25
 
-## CURRENT BRANCH: feat/kubernetes (merged from feat/optimization)
-**Status**: Production Ready - Testing Complete + Bug Fix Deployed
+## CURRENT BRANCH: feat/kubernetes-restore (NEW - branched from feat/kubernetes)
+**Status**: Async Restore Implementation Complete - Ready for Testing
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Merge**: feat/optimization → feat/kubernetes on 2026-02-25
+**Last Commit**: feat: implement async restore endpoint with progress tracking (8bc0ccb)
 
-### Branch Cleanup (2026-02-25)
-**Merged**: feat/optimization → feat/kubernetes (fast-forward merge, 10+ commits)
-**Deleted Local Branches**:
-- ❌ feat/kubernetes-restore
-- ❌ feat/restore  
-- ❌ feat/scaling
+### Recent Branch Activity (2026-02-25)
+**Current Work**: feat/kubernetes-restore (implementing async /api/v2/restore endpoint)
+**Parent Branch**: feat/kubernetes (production ready with 55s clone times)
+**Previous Merge**: feat/optimization → feat/kubernetes on 2026-02-25
 
+### Branch Status
+**Active Branch**: feat/kubernetes-restore ← CURRENT WORK HERE
+**Stable Branch**: feat/kubernetes (production ready, not deleted)
 **Remote Branches** (still exist on origin):
 - origin/feat/restore - can be deleted if no longer needed
 - All other feature branches remain on remote
 
-## Current Status Summary (feat/optimization branch - Kubernetes Architecture)
+## Current Status Summary (feat/kubernetes-restore branch - Kubernetes Architecture)
 
-### 🎯 Active Development - Optimization Phase 1 & 2 COMPLETE
-**Optimization Goals Achieved**:
+### 🎯 Active Development - Async Restore Implementation (NEW - Feb 25, 2026)
+**Current Goal**: Implement async restore endpoint matching async clone pattern
+**Status**: Implementation Complete - Ready for User Testing
+
+**Implementation Complete**:
+- ✅ Created `POST /api/v2/restore` endpoint (returns job_id immediately)
+- ✅ Created `restore_wordpress()` Dramatiq task with progress tracking
+- ✅ Marked old `/restore` endpoint as deprecated (backward compatible)
+- ✅ Added comprehensive OpenSpec documentation
+- ✅ Created test script and testing guide (TEST_SCENARIO.md)
+- ✅ Built and deployed Docker image: `wp-k8s-service:bugfix-20260225-112952`
+- ⏳ **Awaiting User Testing**: Need to run test scenario to verify end-to-end workflow
+
+**Previous Achievements (feat/kubernetes branch)**:
 - ✅ **Phase 1**: Local MySQL sidecars + Warm pool system (3-pod pool)
 - ✅ **Phase 2**: Parallel execution in clone creation workflow
-- ✅ **Target**: < 65 seconds for clone creation (down from 5+ minutes)
-- ⏳ **Testing Phase**: Need to validate performance and stability
+- ✅ **Performance**: 55 seconds for clone creation (down from 5+ minutes)
+- ✅ **Testing**: Complete with bug fixes deployed
 
 ### 🏗️ Current Infrastructure (Kubernetes on EKS)
 - **EKS Cluster**: `wp-clone-restore` in us-east-1
@@ -39,18 +52,22 @@
 
 ### 📋 Testing Scripts Available
 - **scripts/clone-single.py**: Test single clone creation with timing
+- **scripts/restore-single.py**: Test async restore endpoint (NEW - Feb 25, 2026)
 - **scripts/bulk-create-clones.py**: Load test with 50 concurrent clones
 - **scripts/delete-clones.py**: Cleanup test clones and resources
+- **TEST_SCENARIO.md**: Complete testing guide for async restore (NEW - Feb 25, 2026)
 
 ### ✅ What's Working (Kubernetes Architecture)
 - **Warm pool system**: Pre-provisioned WordPress pods ready for instant assignment
 - **Local MySQL sidecars**: Each pod has dedicated MySQL container (no shared DB bottleneck)
-- **Async clone creation**: Dramatiq workers process clone jobs via Redis queue
+- **Async clone creation**: Dramatiq workers process clone jobs via Redis queue (`POST /api/v2/clone`)
+- **Async restore endpoint**: New non-blocking restore with job status polling (`POST /api/v2/restore`) - READY FOR TESTING
 - **Traefik ingress**: Dynamic subdomain routing (`clone-id.clones.betaweb.ai`)
 - **TTL-based cleanup**: CronJob automatically removes expired clones
 - **Parallel execution**: WordPress setup runs concurrently with pod assignment
 - **Job status polling**: `/api/v2/job-status/{job_id}` endpoint tracks progress
 - **HTTPS support**: All clones accessible via HTTPS subdomain
+- **Progress tracking**: Restore operations report progress (10% → 30% → 50% → 100%)
 
 ### 🔧 Optimization Implementation Details
 **Warm Pool Controller** (`kubernetes/wp-k8s-service/app/warm_pool_controller.py`):
@@ -108,10 +125,19 @@
 - ✅ Warm pool pods are reused directly (not creating deployments)
 - ✅ Pod labels updated: `app=wordpress-warm` → `app=wordpress-clone`
 
-**Outstanding Items:**
+**Outstanding Items (feat/kubernetes branch)**:
 - ⏳ Test TTL cleanup and pod return to pool
 - ⏳ Test 50 clones/hour sustained load
-- ⏳ Push 5 unpushed commits to remote
+- ⏳ Push remaining commits to remote
+
+**Outstanding Items (feat/kubernetes-restore branch - CURRENT)**:
+- ⏳ **USER ACTION REQUIRED**: Run test scenario from TEST_SCENARIO.md
+- ⏳ Verify async restore works end-to-end (clone → edit → restore)
+- ⏳ Extract perform_restore() function from perform_clone() (future enhancement)
+- ⏳ Implement preserve_plugins/preserve_themes properly (future enhancement)
+- ⏳ Update API documentation with new endpoint
+- ⏳ Push feat/kubernetes-restore branch to remote
+- ⏳ Consider merging to feat/kubernetes after successful testing
 
 ### 📊 Performance Targets (Phase 1 & 2)
 - ✅ **Local MySQL**: Eliminate shared DB bottleneck (IMPLEMENTED)
@@ -120,12 +146,66 @@
 - ⏳ **Total Clone Time**: < 65 seconds (NEEDS TESTING)
 - ⏳ **Sustained Load**: 50 clones/hour without degradation (NEEDS TESTING)
 
-### 📝 Recent Commits (Unpushed - 5 commits)
+### 📝 Recent Commits (feat/kubernetes-restore branch - Unpushed)
+1. `8bc0ccb` - feat: implement async restore endpoint with progress tracking (Feb 25, 2026)
+
+### 📝 Recent Commits (feat/kubernetes branch - Unpushed - 5 commits)
 1. `49311a0` - chore: cleanup and documentation updates
 2. `c7bed15` - fix: add JSON credential file cleanup to delete-clones.py
 3. `8bf7f42` - fix: preserve app label in warm pool _tag_pod for TTL cleaner
 4. `4c91b77` - fix: add HTTPS flag post-clone so wp-login works behind TLS LB
 5. `bffd5dd` - fix: resolve 5-layer clone failure - clones now serve actual source content
+
+### 🆕 Async Restore Implementation (Feb 25, 2026)
+**Branch**: feat/kubernetes-restore (branched from feat/kubernetes)
+**Status**: Implementation Complete - Awaiting User Testing
+**Deployed**: Docker image `wp-k8s-service:bugfix-20260225-112952` to EKS cluster
+
+**Implementation Summary**:
+- **New Endpoint**: `POST /api/v2/restore` returns `job_id` immediately (non-blocking)
+- **Dramatiq Task**: `restore_wordpress()` in tasks.py processes restore jobs asynchronously
+- **Progress Tracking**: 10% (job received) → 30% (source setup) → 50% (target setup) → 100% (complete)
+- **Clone Detection**: Automatically detects clone sources (URLs with `/clone-` or `.clones.betaweb.ai`)
+- **Fast Path**: Clone sources try `migration-master-key` first before browser automation
+- **Browser Automation**: Used for source key retrieval and target setup when needed
+- **Backward Compatible**: Old `/restore` endpoint preserved but marked as deprecated
+- **Job Status**: Poll via existing `GET /api/v2/job-status/{job_id}` endpoint
+
+**Key Features**:
+1. **Non-blocking**: Returns immediately, client polls for status
+2. **Progress visibility**: Real-time progress updates via job status endpoint
+3. **Timeout prevention**: No risk of HTTP timeouts on long operations (60-120s)
+4. **Consistent UX**: Matches existing async clone endpoint pattern
+5. **Error handling**: Comprehensive error reporting through job status
+
+**Files Modified**:
+- `kubernetes/wp-k8s-service/app/main.py`:
+  - Lines 1087-1111: AsyncRestoreRequest model
+  - Lines 1157-1178: POST /api/v2/restore endpoint
+  - Lines 826-845: Deprecated old restore endpoint (marked with warning)
+- `kubernetes/wp-k8s-service/app/tasks.py`:
+  - Lines 181-310: restore_wordpress() Dramatiq task
+
+**Files Created**:
+- `scripts/restore-single.py`: Test script for async restore endpoint
+- `TEST_SCENARIO.md`: Complete step-by-step testing guide
+- `openspec/changes/restore-async-optimization/README.md`: Implementation design
+- `openspec/changes/restore-async-optimization/tasks.md`: Detailed task breakdown
+
+**Testing Instructions**:
+See `TEST_SCENARIO.md` for complete testing workflow:
+1. Create test clone: `python3 scripts/clone-single.py restore-test-clone`
+2. Edit clone in browser (make visible changes)
+3. Update `scripts/restore-single.py` with clone credentials
+4. Run restore: `python3 scripts/restore-single.py`
+5. Verify changes appeared on target site
+6. Cleanup test resources
+
+**Future Enhancements**:
+- Extract dedicated `perform_restore()` function (currently reuses `perform_clone()`)
+- Implement `preserve_plugins` and `preserve_themes` parameters properly
+- Add comprehensive API documentation
+- Consider adding restore-specific progress milestones
 
 ### 🔑 Key Fixes in Latest Commits
 - **5-layer clone fix**: Clones now correctly serve source WordPress content (not default WP)

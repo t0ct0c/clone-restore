@@ -13,14 +13,14 @@ API_BASE = "https://clones.betaweb.ai"
 API_HOST = "clones.betaweb.ai"
 
 # Source (clone or regular WordPress site)
-SOURCE_URL = "https://test-clone.clones.betaweb.ai"  # Change to your clone URL
+SOURCE_URL = "https://restore-test-clone.clones.betaweb.ai/"  # Change to your clone URL
 SOURCE_USERNAME = "admin"
-SOURCE_PASSWORD = "your-clone-password"  # Change to your clone password
+SOURCE_PASSWORD = "Gtj2dWQS0GkyCgRZ9ac4tHknW6B0CchL"  # Change to your clone password
 
 # Target (production site)
-TARGET_URL = "https://your-target-site.com"  # Change to your target URL
-TARGET_USERNAME = "admin"
-TARGET_PASSWORD = "your-target-password"  # Change to your target password
+TARGET_URL = "https://betaweb.ai/"  # Change to your target URL
+TARGET_USERNAME = "Charles@toctoc.com.au"
+TARGET_PASSWORD = "6(4b`Nde1i_D"  # Change to your target password
 
 
 def main():

@@ -1,0 +1,18 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: wp-k8s-api
+  namespace: wordpress-staging
+  annotations:
+    traefik.ingress.kubernetes.io/router.priority: "100"
+spec:
+  entryPoints:
+    - web
+    - websecure
+  routes:
+    - match: Host(`clones.betaweb.ai`) && PathPrefix(`/api/`)
+      kind: Rule
+      services:
+        - name: wp-k8s-service
+          port: 80
+          passHostHeader: true
