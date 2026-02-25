@@ -104,7 +104,7 @@ spec:
           timeoutSeconds: 5
           failureThreshold: 3
       - name: dramatiq-worker
-        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:20260222-js-eval-events
+        image: 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:ttl-fix-20260225-171603
         imagePullPolicy: Always
         command: ["dramatiq", "app.main", "--queues", "clone-queue", "--processes", "2", "--threads", "2"]
         env:
@@ -138,11 +138,11 @@ spec:
           value: "wp-k8s-service-worker"
         resources:
           requests:
-            cpu: 250m
-            memory: 512Mi
+            cpu: 500m
+            memory: 1Gi
           limits:
-            cpu: 1000m
-            memory: 2Gi
+            cpu: 2000m
+            memory: 4Gi
         livenessProbe:
           exec:
             command:
