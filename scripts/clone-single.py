@@ -11,8 +11,8 @@ import base64
 import json
 import sys
 
-API_BASE = "http://k8s-traefiks-traefik-30437c81e0-7add42ef82721255.elb.us-east-1.amazonaws.com"
-API_HOST = "api.clones.betaweb.ai"
+API_BASE = "https://clones.betaweb.ai"
+API_HOST = "clones.betaweb.ai"
 SOURCE_URL = "https://betaweb.ai"
 SOURCE_USERNAME = "Charles@toctoc.com.au"
 SOURCE_PASSWORD = "6(4b`Nde1i_D"

@@ -76,6 +76,15 @@ class K8sProvisioner:
         from .warm_pool_controller import WarmPoolController
 
         try:
+            # Clean up any existing resources with this customer_id BEFORE assigning new pod
+            logger.info(f"Cleaning up existing resources for {customer_id}")
+            self._delete_service(customer_id)
+            self._delete_ingress(customer_id)
+            self._cleanup_deployment(customer_id)
+            self._cleanup_existing_pods(
+                customer_id
+            )  # Cleanup old pods from previous runs
+
             logger.info(f"Assigning warm pod for {customer_id}")
             warm_pool = WarmPoolController(namespace=self.namespace)
 
@@ -102,11 +111,6 @@ class K8sProvisioner:
 
             # Tag pod for customer
             self._tag_pod_for_customer(pod_name, customer_id, ttl_minutes)
-
-            # Clean up any existing resources with this customer_id (from previous failed attempts)
-            self._delete_service(customer_id)
-            self._delete_ingress(customer_id)
-            self._cleanup_deployment(customer_id)
 
             # Create Service and Ingress
             self._create_service_for_pod(customer_id, pod_name)
@@ -135,6 +139,12 @@ class K8sProvisioner:
         """Cold provision new pod with MySQL sidecar (fallback)"""
         try:
             logger.info(f"Cold provisioning for {customer_id}")
+
+            # Clean up any existing resources with this customer_id
+            self._delete_service(customer_id)
+            self._delete_ingress(customer_id)
+            self._cleanup_deployment(customer_id)
+            self._cleanup_existing_pods(customer_id)
 
             # Generate credentials
             wp_password = self._generate_password()
@@ -704,6 +714,22 @@ class K8sProvisioner:
             logger.info(f"Deleted Deployment: {customer_id}")
         except ApiException:
             pass
+
+    def _cleanup_existing_pods(self, customer_id: str):
+        """Delete any existing pods with clone-id label (warm pool pods from previous attempts)"""
+        try:
+            pods = self.core_api.list_namespaced_pod(
+                namespace=self.namespace, label_selector=f"clone-id={customer_id}"
+            )
+            for pod in pods.items:
+                self.core_api.delete_namespaced_pod(
+                    name=pod.metadata.name, namespace=self.namespace
+                )
+                logger.info(
+                    f"Deleted existing pod: {pod.metadata.name} with clone-id={customer_id}"
+                )
+        except ApiException as e:
+            logger.warning(f"Failed to cleanup existing pods for {customer_id}: {e}")
 
     def run_wp_cli_in_container(self, customer_id: str, wp_cli_command: str) -> bool:
         """

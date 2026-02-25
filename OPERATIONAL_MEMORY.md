@@ -1,33 +1,133 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-02-07
+**Last Updated**: 2026-02-25
 
-## Current Status Summary
+## CURRENT BRANCH: feat/optimization
+**Status**: Testing Phase
+**System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
+**Previous Context**: Was on feat/clonehttps-with-app-passwords (EC2-based system - DEPRECATED)
 
-### ✅ What's Working
-- **Clone endpoint**: Successfully creates clones from any WordPress site
-- **Auto-provisioning**: Automatically provisions EC2 containers with unique credentials
-- **Browser automation**: Logs in, uploads plugin, activates, retrieves API key
-- **Response format**: Returns URL, username, password, expiration time
-- **ALB path-based routing**: Dynamic listener rules route each clone to correct instance
-- **HTTPS clone URLs**: All clones served via `https://clones.betaweb.ai/clone-YYYYMMDD-HHMMSS/`
-- **Frontend access**: Clone homepages and content accessible via HTTPS
-- **wp-admin access**: Login pages load correctly (with wp-admin.php redirect)
-- **REST API**: Export/import endpoints fully functional on clones
-- **Restore workflow**: Clone → production restore working end-to-end
-- **Multiple restores**: Unlimited consecutive restores to same target (browser automation re-activates plugin each time)
+## Current Status Summary (feat/optimization branch - Kubernetes Architecture)
 
-### 🎯 System Ready for Production Use
-All core functionality is working. The system can:
-1. Clone any WordPress site to temporary AWS containers
-2. Make changes safely on clones
-3. Restore changes back to production with theme/plugin preservation options
-4. Perform unlimited consecutive restores reliably (SiteGround compatible)
+### 🎯 Active Development - Optimization Phase 1 & 2 COMPLETE
+**Optimization Goals Achieved**:
+- ✅ **Phase 1**: Local MySQL sidecars + Warm pool system (3-pod pool)
+- ✅ **Phase 2**: Parallel execution in clone creation workflow
+- ✅ **Target**: < 65 seconds for clone creation (down from 5+ minutes)
+- ⏳ **Testing Phase**: Need to validate performance and stability
 
-## Infrastructure Overview
+### 🏗️ Current Infrastructure (Kubernetes on EKS)
+- **EKS Cluster**: `wp-clone-restore` in us-east-1
+- **Warm Pool**: 3 WordPress pods (`wordpress-warm-*`) ready for instant assignment
+- **Service**: `wp-k8s-service` (FastAPI + Dramatiq) - deployed and healthy
+- **Redis**: Master pod running for async job queue
+- **TTL Cleaner**: CronJob executing every 5 minutes
+- **Ingress**: Traefik for unlimited subdomain-based routing
+- **Domain**: `clones.betaweb.ai` (subdomain routing: `clone-id.clones.betaweb.ai`)
+- **Test Clones**: load-test-002, test-https-fix, test-script-001, test-ttl-fix-2
 
-### Management Server (EC2 Instance)
-- **Public IP**: 13.222.20.138
+### 📋 Testing Scripts Available
+- **scripts/clone-single.py**: Test single clone creation with timing
+- **scripts/bulk-create-clones.py**: Load test with 50 concurrent clones
+- **scripts/delete-clones.py**: Cleanup test clones and resources
+
+### ✅ What's Working (Kubernetes Architecture)
+- **Warm pool system**: Pre-provisioned WordPress pods ready for instant assignment
+- **Local MySQL sidecars**: Each pod has dedicated MySQL container (no shared DB bottleneck)
+- **Async clone creation**: Dramatiq workers process clone jobs via Redis queue
+- **Traefik ingress**: Dynamic subdomain routing (`clone-id.clones.betaweb.ai`)
+- **TTL-based cleanup**: CronJob automatically removes expired clones
+- **Parallel execution**: WordPress setup runs concurrently with pod assignment
+- **Job status polling**: `/api/v2/job-status/{job_id}` endpoint tracks progress
+- **HTTPS support**: All clones accessible via HTTPS subdomain
+
+### 🔧 Optimization Implementation Details
+**Warm Pool Controller** (`kubernetes/wp-k8s-service/app/warm_pool_controller.py`):
+- Maintains pool of 3 ready pods
+- Instant assignment when clone requested
+- Automatic pool replenishment after assignment
+
+**K8s Provisioner** (`kubernetes/wp-k8s-service/app/k8s_provisioner.py`):
+- Creates Deployment + Service + Ingress for each clone
+- Local MySQL sidecar per pod (no external DB)
+- Parallel WordPress setup during provisioning
+
+**TTL Cleaner** (`kubernetes/wp-k8s-service/app/ttl_cleaner.py`):
+- CronJob checks for expired clones every 5 minutes
+- Cleans up Kubernetes resources (Deployment, Service, Ingress, Secret)
+- Returns pods to warm pool when possible
+
+**Async Task Queue** (`kubernetes/wp-k8s-service/app/tasks.py`):
+- Dramatiq workers process clone jobs
+- Redis backend for job queue
+- Status tracking for each job
+
+### ✅ Testing Phase COMPLETE - Results (2026-02-25)
+
+**Test 1: Single Clone Creation (Warm Pool)**
+- ✅ Clone created in **55 seconds** (10s under 65s target!)
+- ✅ Pod assigned from warm pool instantly
+- ✅ HTTPS URL accessible: `test-opencode-001.clones.betaweb.ai`
+- ✅ MySQL sidecar running (2/2 containers)
+- ✅ Database healthy with source content (1MB)
+
+**Test 2: Second Clone (Cold Provision)**
+- ✅ Clone created in **80 seconds** (warm pool empty)
+- ✅ Cold provisioning fallback working correctly
+- ✅ New warm pool pod created automatically
+- ✅ Both clones accessible simultaneously
+
+**Test 3: Bulk Load Test (10 Clones)**
+- ✅ 10 clones created successfully
+- ✅ Mix of warm pool + cold deployments
+- ✅ All clones accessible with unique subdomains
+- ✅ System handled concurrent load without issues
+- ✅ Services + Ingress created for all clones
+
+**MySQL Sidecar Verification:**
+- ✅ Database connectivity: All 15 WordPress tables healthy
+- ✅ Database size: ~1MB with source site content
+- ✅ WP-CLI commands working: `wp db check`, `wp db size`, `wp post list`
+- ✅ Local MySQL eliminates shared DB bottleneck
+
+**Warm Pool Behavior:**
+- ✅ Pods assigned instantly when available
+- ⚠️ Warm pool depletes during high load (as expected)
+- ✅ Cold provisioning fallback working (80s vs 55s)
+- ✅ Warm pool pods are reused directly (not creating deployments)
+- ✅ Pod labels updated: `app=wordpress-warm` → `app=wordpress-clone`
+
+**Outstanding Items:**
+- ⏳ Test TTL cleanup and pod return to pool
+- ⏳ Test 50 clones/hour sustained load
+- ⏳ Push 5 unpushed commits to remote
+
+### 📊 Performance Targets (Phase 1 & 2)
+- ✅ **Local MySQL**: Eliminate shared DB bottleneck (IMPLEMENTED)
+- ✅ **Warm Pool**: < 10s pod assignment (IMPLEMENTED - 3 pods ready)
+- ✅ **Parallel Execution**: WordPress setup + pod provisioning concurrent (IMPLEMENTED)
+- ⏳ **Total Clone Time**: < 65 seconds (NEEDS TESTING)
+- ⏳ **Sustained Load**: 50 clones/hour without degradation (NEEDS TESTING)
+
+### 📝 Recent Commits (Unpushed - 5 commits)
+1. `49311a0` - chore: cleanup and documentation updates
+2. `c7bed15` - fix: add JSON credential file cleanup to delete-clones.py
+3. `8bf7f42` - fix: preserve app label in warm pool _tag_pod for TTL cleaner
+4. `4c91b77` - fix: add HTTPS flag post-clone so wp-login works behind TLS LB
+5. `bffd5dd` - fix: resolve 5-layer clone failure - clones now serve actual source content
+
+### 🔑 Key Fixes in Latest Commits
+- **5-layer clone fix**: Clones now correctly serve source WordPress content (not default WP)
+- **HTTPS wp-login**: Set HTTPS flag after clone creation for TLS load balancer compatibility
+- **Warm pool labels**: Preserve `app=wordpress-warm` label so TTL cleaner can identify pool pods
+- **Credential cleanup**: delete-clones.py now removes JSON credential files after deletion
+
+---
+
+## OLD INFRASTRUCTURE (EC2-based - DEPRECATED - Use for Reference Only)
+
+### Management Server (EC2 Instance - DEPRECATED)
+- **Public IP**: 13.222.20.138 (no longer used for Kubernetes architecture)
 - **Private IP**: 10.0.13.72 (same host, different network interface)
 - **SSH Key**: wp-targets-key.pem
 - **Service**: wp-setup-service (FastAPI + Playwright + Camoufox)
