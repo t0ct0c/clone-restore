@@ -2,6 +2,63 @@
 
 Simple API for cloning WordPress sites and restoring them to production.
 
+## System Architecture
+
+```mermaid
+flowchart TD
+    Start([User Request]) --> CloneOrRestore{Operation Type?}
+    
+    %% Clone Flow
+    CloneOrRestore -->|Clone| CloneAPI[POST /api/v2/clone]
+    CloneAPI --> CloneJob[Create Dramatiq Job]
+    CloneJob --> CloneQueue[(Redis Queue)]
+    CloneQueue --> CloneWorker[Dramatiq Worker]
+    
+    CloneWorker --> WarmPool{Warm Pool\nAvailable?}
+    WarmPool -->|Yes| AssignPod[Assign Pod from Pool<br/>~5 seconds]
+    WarmPool -->|No| ColdProvision[Cold Provision New Pod<br/>~80 seconds]
+    
+    AssignPod --> SetupWP[Setup WordPress<br/>in Parallel]
+    ColdProvision --> SetupWP
+    
+    SetupWP --> ImportData[Import Source Data<br/>~50 seconds]
+    ImportData --> CloneReady[Clone Ready]
+    CloneReady --> CloneURL[Return Clone URL<br/>customer-id.clones.betaweb.ai]
+    
+    %% Restore Flow
+    CloneOrRestore -->|Restore| RestoreAPI[POST /api/v2/restore]
+    RestoreAPI --> RestoreJob[Create Dramatiq Job]
+    RestoreJob --> RestoreQueue[(Redis Queue)]
+    RestoreQueue --> RestoreWorker[Dramatiq Worker]
+    
+    RestoreWorker --> ExportSource[Export from Clone<br/>10% progress]
+    ExportSource --> SetupTarget[Setup Target Site<br/>30% progress]
+    SetupTarget --> ImportTarget[Import to Target<br/>50% progress]
+    ImportTarget --> Verify[Verify Import<br/>100% progress]
+    Verify --> RestoreComplete[Restore Complete]
+    
+    %% Status Polling
+    CloneURL --> PollStatus[Client Polls Status]
+    RestoreComplete --> PollStatus
+    PollStatus --> StatusAPI[GET /api/v2/job-status/job-id]
+    StatusAPI --> StatusCheck{Status?}
+    StatusCheck -->|pending| PollStatus
+    StatusCheck -->|in_progress| PollStatus
+    StatusCheck -->|completed| Done([Done])
+    StatusCheck -->|failed| Error([Error])
+    
+    %% Styling
+    classDef apiClass fill:#4CAF50,stroke:#2E7D32,color:#fff
+    classDef queueClass fill:#2196F3,stroke:#1565C0,color:#fff
+    classDef workerClass fill:#FF9800,stroke:#E65100,color:#fff
+    classDef decisionClass fill:#9C27B0,stroke:#6A1B9A,color:#fff
+    
+    class CloneAPI,RestoreAPI,StatusAPI apiClass
+    class CloneQueue,RestoreQueue queueClass
+    class CloneWorker,RestoreWorker,AssignPod,ColdProvision,SetupWP,ImportData,ExportSource,SetupTarget,ImportTarget workerClass
+    class CloneOrRestore,WarmPool,StatusCheck decisionClass
+```
+
 ## Quick Start
 
 ### 1. Create a Clone
