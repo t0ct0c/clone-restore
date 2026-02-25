@@ -112,6 +112,9 @@ class K8sProvisioner:
             # Tag pod for customer
             self._tag_pod_for_customer(pod_name, customer_id, ttl_minutes)
 
+            # Add TTL label to secret
+            self._add_ttl_to_secret(customer_id, ttl_minutes)
+
             # Create Service and Ingress
             self._create_service_for_pod(customer_id, pod_name)
             self._create_ingress(customer_id)
@@ -624,11 +627,19 @@ class K8sProvisioner:
 
             subdomain = f"{customer_id}.clones.betaweb.ai"
 
+            # Get TTL from service to apply to ingress
+            service = self.core_api.read_namespaced_service(customer_id, self.namespace)
+            ttl_label = service.metadata.labels.get("ttl-expires-at", "")
+
             ingress = V1Ingress(
                 metadata=V1ObjectMeta(
                     name=customer_id,
                     namespace=self.namespace,
-                    labels={"app": "wordpress-clone", "clone-id": customer_id},
+                    labels={
+                        "app": "wordpress-clone",
+                        "clone-id": customer_id,
+                        "ttl-expires-at": ttl_label,
+                    },
                     annotations={
                         "traefik.ingress.kubernetes.io/router.entrypoints": "web,websecure",
                     },
@@ -852,13 +863,42 @@ class K8sProvisioner:
         self.core_api.patch_namespaced_pod(pod_name, self.namespace, body)
         logger.info(f"Tagged pod {pod_name} for customer {customer_id}")
 
+    def _add_ttl_to_secret(self, customer_id: str, ttl_minutes: int):
+        """Add TTL label to credentials secret"""
+        ttl_label = str(
+            int((datetime.utcnow() + timedelta(minutes=ttl_minutes)).timestamp())
+        )
+
+        secret_name = f"{customer_id}-credentials"
+        try:
+            body = {
+                "metadata": {
+                    "labels": {
+                        "ttl-expires-at": ttl_label,
+                    }
+                }
+            }
+            self.core_api.patch_namespaced_secret(secret_name, self.namespace, body)
+            logger.info(f"Added TTL label to secret {secret_name}")
+        except Exception as e:
+            logger.warning(f"Failed to add TTL to secret {secret_name}: {e}")
+
     def _create_service_for_pod(self, customer_id: str, pod_name: str) -> bool:
         """Create ClusterIP Service for specific pod"""
         try:
+            # Get TTL from pod to apply to service
+            pod = self.core_api.read_namespaced_pod(pod_name, self.namespace)
+            ttl_label = pod.metadata.labels.get("ttl-expires-at", "")
+
             service = client.V1Service(
                 metadata=client.V1ObjectMeta(
                     name=customer_id,
                     namespace=self.namespace,
+                    labels={
+                        "app": "wordpress-clone",
+                        "clone-id": customer_id,
+                        "ttl-expires-at": ttl_label,
+                    },
                 ),
                 spec=client.V1ServiceSpec(
                     selector={"clone-id": customer_id},

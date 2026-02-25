@@ -136,10 +136,17 @@ def cleanup_expired_clones():
 
             # Check if this is a warm pool pod
             pod_labels = pod.metadata.labels or {}
+            clone_id = pod_labels.get("clone-id")
             is_warm_pool = pod_labels.get("pool-type") in ["warm", "assigned"]
 
             if is_warm_pool:
                 logger.info(f"  {name} is a warm pool pod - returning to pool")
+                # Clean up associated resources first
+                if clone_id:
+                    _delete_clone_resources_only(
+                        clone_id, namespace, core_api, networking_api
+                    )
+
                 try:
                     import asyncio
 
@@ -161,6 +168,11 @@ def cleanup_expired_clones():
                         pass
             else:
                 logger.info(f"  {name} is a regular clone pod - deleting")
+                # Clean up associated resources
+                if clone_id:
+                    _delete_clone_resources_only(
+                        clone_id, namespace, core_api, networking_api
+                    )
                 try:
                     core_api.delete_namespaced_pod(name, namespace)
                     deleted_count += 1
