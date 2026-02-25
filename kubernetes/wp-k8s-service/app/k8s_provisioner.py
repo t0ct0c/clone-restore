@@ -194,7 +194,9 @@ class K8sProvisioner:
             self._create_service(customer_id)
             self._create_ingress(customer_id)
 
-            # Plugin is pre-installed, no activation needed
+            # Activate the custom-migrator plugin via WP-CLI
+            self._activate_plugin_via_wpcli(customer_id)
+
             logger.info(f"Cold provision complete for {customer_id}")
 
             return {
@@ -1126,4 +1128,84 @@ class K8sProvisioner:
             return False
         except Exception as e:
             logger.error(f"Error waiting for WordPress: {e}")
+            return False
+
+    def _activate_plugin_via_wpcli(self, customer_id: str) -> bool:
+        """Activate custom-migrator plugin via WP-CLI in the pod"""
+        try:
+            from kubernetes.stream import stream
+
+            logger.info(f"Activating custom-migrator plugin for {customer_id}")
+
+            # Get the pod name
+            pods = self.core_api.list_namespaced_pod(
+                namespace=self.namespace, label_selector=f"clone-id={customer_id}"
+            )
+
+            if not pods.items:
+                logger.error(f"No pod found for {customer_id}")
+                return False
+
+            pod_name = pods.items[0].metadata.name
+            container_name = "wordpress"  # Main WordPress container
+
+            # Activate plugin via WP-CLI
+            exec_command = [
+                "wp",
+                "plugin",
+                "activate",
+                "custom-migrator",
+                "--path=/var/www/html",
+                "--allow-root",
+            ]
+
+            resp = stream(
+                self.core_api.connect_get_namespaced_pod_exec,
+                pod_name,
+                self.namespace,
+                container=container_name,
+                command=exec_command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+
+            logger.info(f"Plugin activation output: {resp}")
+
+            # Verify plugin is active
+            check_command = [
+                "wp",
+                "plugin",
+                "list",
+                "--status=active",
+                "--name=custom-migrator",
+                "--path=/var/www/html",
+                "--allow-root",
+                "--format=count",
+            ]
+
+            resp = stream(
+                self.core_api.connect_get_namespaced_pod_exec,
+                pod_name,
+                self.namespace,
+                container=container_name,
+                command=check_command,
+                stderr=True,
+                stdin=False,
+                stdout=True,
+                tty=False,
+            )
+
+            if "1" in resp:
+                logger.info(
+                    f"Successfully activated custom-migrator plugin on {customer_id}"
+                )
+                return True
+            else:
+                logger.warning(f"Plugin activation uncertain: {resp}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to activate plugin via WP-CLI: {e}")
             return False
