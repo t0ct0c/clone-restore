@@ -4,59 +4,104 @@ Simple API for cloning WordPress sites and restoring them to production.
 
 ## System Architecture
 
+### Infrastructure Overview
+- **Cluster:** EKS (wp-clone-restore) in us-east-1
+- **Namespace:** wordpress-staging
+- **Load Balancer:** Traefik (TLS termination)
+- **Queue:** Redis (async job processing)
+- **Storage:** Local MySQL sidecar per pod (no shared DB)
+- **Domain:** *.clones.betaweb.ai
+
 ```mermaid
 flowchart TD
     Start([User Request]) --> CloneOrRestore{Operation Type?}
     
     %% Clone Flow
-    CloneOrRestore -->|Clone| CloneAPI[POST /api/v2/clone]
-    CloneAPI --> CloneJob[Create Dramatiq Job]
-    CloneJob --> CloneQueue[(Redis Queue)]
-    CloneQueue --> CloneWorker[Dramatiq Worker]
+    CloneOrRestore -->|Clone| CloneAPI[POST /api/v2/clone<br/>Returns job_id immediately]
+    CloneAPI --> CloneJob[Dramatiq Job Created]
+    CloneJob --> RedisQueue[(Redis Queue)]
+    RedisQueue --> Worker[Dramatiq Worker]
     
-    CloneWorker --> WarmPool{Warm Pool\nAvailable?}
-    WarmPool -->|Yes| AssignPod[Assign Pod from Pool<br/>~5 seconds]
-    WarmPool -->|No| ColdProvision[Cold Provision New Pod<br/>~80 seconds]
+    Worker --> PoolCheck{Warm Pool<br/>Available?}
     
-    AssignPod --> SetupWP[Setup WordPress<br/>in Parallel]
-    ColdProvision --> SetupWP
+    %% Warm Pool Path
+    PoolCheck -->|Yes 2-3 pods ready| WarmAssign[Assign Warm Pod<br/>~8 seconds]
+    WarmAssign --> ResetDB[Reset MySQL Database<br/>wp db reset]
+    ResetDB --> WPInstall[wp core install<br/>Create admin user]
+    WPInstall --> PluginSetup[Install custom-migrator<br/>Set API key]
+    PluginSetup --> TagPod[Update Pod Labels<br/>Clone ID + TTL]
     
-    SetupWP --> ImportData[Import Source Data<br/>~50 seconds]
-    ImportData --> CloneReady[Clone Ready]
-    CloneReady --> CloneURL[Return Clone URL<br/>customer-id.clones.betaweb.ai]
+    %% Cold Provision Path
+    PoolCheck -->|No| ColdDeploy[Create K8s Resources<br/>Pod + Service + Ingress<br/>~80 seconds]
+    ColdDeploy --> Containers[Start Containers<br/>WordPress + MySQL sidecar]
+    Containers --> WPInstall
+    
+    %% Common Path
+    TagPod --> CreateService[Create Service<br/>ClusterIP]
+    CreateService --> CreateIngress[Create Ingress<br/>Traefik routing]
+    CreateIngress --> SetupSource[Browser: Login to Source<br/>Get API key]
+    SetupSource --> Export[Export from Source<br/>~30 seconds]
+    Export --> Import[Import to Clone<br/>~20 seconds]
+    Import --> SetHTTPS[Set HTTPS flag<br/>For TLS load balancer]
+    SetHTTPS --> CloneComplete[Clone Complete<br/>job_id status: completed]
     
     %% Restore Flow
-    CloneOrRestore -->|Restore| RestoreAPI[POST /api/v2/restore]
-    RestoreAPI --> RestoreJob[Create Dramatiq Job]
-    RestoreJob --> RestoreQueue[(Redis Queue)]
-    RestoreQueue --> RestoreWorker[Dramatiq Worker]
+    CloneOrRestore -->|Restore| RestoreAPI[POST /api/v2/restore<br/>Returns job_id immediately]
+    RestoreAPI --> RestoreJob[Dramatiq Job Created]
+    RestoreJob --> RedisQueue
+    RedisQueue --> RestoreWorker[Dramatiq Worker]
     
-    RestoreWorker --> ExportSource[Export from Clone<br/>10% progress]
-    ExportSource --> SetupTarget[Setup Target Site<br/>30% progress]
-    SetupTarget --> ImportTarget[Import to Target<br/>50% progress]
-    ImportTarget --> Verify[Verify Import<br/>100% progress]
-    Verify --> RestoreComplete[Restore Complete]
+    RestoreWorker --> SourceSetup[Setup Source Clone<br/>10% progress]
+    SourceSetup --> SourceExport[Export from Clone<br/>30% progress]
+    SourceExport --> TargetSetup[Setup Target Site<br/>50% progress]
+    TargetSetup --> TargetImport[Import to Production<br/>70% progress]
+    TargetImport --> RestoreComplete[Restore Complete<br/>100% progress]
     
-    %% Status Polling
-    CloneURL --> PollStatus[Client Polls Status]
-    RestoreComplete --> PollStatus
-    PollStatus --> StatusAPI[GET /api/v2/job-status/job-id]
-    StatusAPI --> StatusCheck{Status?}
-    StatusCheck -->|pending| PollStatus
-    StatusCheck -->|in_progress| PollStatus
-    StatusCheck -->|completed| Done([Done])
-    StatusCheck -->|failed| Error([Error])
+    %% Monitoring & Cleanup
+    CloneComplete --> Monitor[GET /api/v2/jobs/job-id<br/>Poll for status]
+    RestoreComplete --> Monitor
+    Monitor --> StatusCheck{Status?}
+    StatusCheck -->|pending/running| Monitor
+    StatusCheck -->|completed| GetCreds[kubectl get secret<br/>Get WordPress password]
+    StatusCheck -->|failed| ShowError([Error Message])
+    GetCreds --> Access[Access Clone<br/>https://id.clones.betaweb.ai]
+    
+    %% TTL Cleanup
+    CloneComplete --> TTL[TTL Cleaner CronJob<br/>Every 5 minutes]
+    TTL --> CheckExpiry{TTL<br/>Expired?}
+    CheckExpiry -->|Yes| DeleteRes[Delete Pod + Service<br/>+ Ingress + Secret]
+    CheckExpiry -->|No| TTL
+    DeleteRes --> ReturnPool[Return to Warm Pool<br/>if applicable]
+    
+    %% Infrastructure Components
+    subgraph EKS["EKS Cluster: wp-clone-restore"]
+        subgraph NS["Namespace: wordpress-staging"]
+            WarmPod1[Warm Pod 1<br/>WordPress + MySQL]
+            WarmPod2[Warm Pod 2<br/>WordPress + MySQL]
+            ClonePods[Clone Pods<br/>customer-id pods]
+            RedisQueue
+            Worker
+        end
+        Traefik[Traefik Ingress<br/>TLS Termination]
+    end
+    
+    Internet([Internet]) --> Traefik
+    Traefik --> ClonePods
     
     %% Styling
     classDef apiClass fill:#4CAF50,stroke:#2E7D32,color:#fff
     classDef queueClass fill:#2196F3,stroke:#1565C0,color:#fff
     classDef workerClass fill:#FF9800,stroke:#E65100,color:#fff
     classDef decisionClass fill:#9C27B0,stroke:#6A1B9A,color:#fff
+    classDef k8sClass fill:#326CE5,stroke:#1A4D8F,color:#fff
+    classDef poolClass fill:#00BCD4,stroke:#006064,color:#fff
     
-    class CloneAPI,RestoreAPI,StatusAPI apiClass
-    class CloneQueue,RestoreQueue queueClass
-    class CloneWorker,RestoreWorker,AssignPod,ColdProvision,SetupWP,ImportData,ExportSource,SetupTarget,ImportTarget workerClass
-    class CloneOrRestore,WarmPool,StatusCheck decisionClass
+    class CloneAPI,RestoreAPI,Monitor apiClass
+    class RedisQueue queueClass
+    class Worker,RestoreWorker,WarmAssign,ResetDB,WPInstall,PluginSetup,Export,Import,SourceSetup,SourceExport,TargetSetup,TargetImport workerClass
+    class CloneOrRestore,PoolCheck,StatusCheck,CheckExpiry decisionClass
+    class TagPod,CreateService,CreateIngress,ColdDeploy,Containers,DeleteRes k8sClass
+    class WarmPod1,WarmPod2,ReturnPool poolClass
 ```
 
 ## Quick Start
