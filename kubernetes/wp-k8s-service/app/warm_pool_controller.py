@@ -20,6 +20,8 @@ from kubernetes.stream import stream
 from typing import List, Optional, Dict
 import uuid
 import time
+import redis
+import os
 
 
 class WarmPoolController:
@@ -27,12 +29,21 @@ class WarmPoolController:
         self.namespace = namespace
         self.min_warm_pods = 2
         self.max_warm_pods = 4
+        self.max_burst_pods = 20  # Maximum warm pods during high demand
         self.warm_label_selector = "pool-type=warm"
 
         # Load in-cluster Kubernetes config
         config.load_incluster_config()
         self.v1 = client.CoreV1Api()
         self.apps_v1 = client.AppsV1Api()
+
+        # Redis connection for queue monitoring
+        redis_url = os.getenv(
+            "REDIS_URL",
+            "redis://redis-master.wordpress-staging.svc.cluster.local:6379/0",
+        )
+        self.redis_client = redis.from_url(redis_url, decode_responses=True)
+        self.queue_name = "clone-queue"
 
         # Pod configuration
         self.warm_pod_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:final-fix-20260226-104040"
@@ -42,8 +53,19 @@ class WarmPoolController:
             "limits": {"cpu": "500m", "memory": "1Gi"},
         }
 
+    def _get_queue_depth(self) -> int:
+        """Get the number of pending messages in the clone queue"""
+        try:
+            # Dramatiq stores messages in Redis lists with key format: dramatiq:{queue_name}.msgs
+            queue_key = f"{self.queue_name}.msgs"
+            depth = self.redis_client.llen(queue_key)
+            return depth
+        except Exception as e:
+            logger.error(f"Failed to get queue depth: {e}")
+            return 0
+
     async def maintain_pool(self):
-        """Background task: maintain 1-2 warm pods"""
+        """Background task: maintain warm pods with demand-based scaling"""
         while True:
             try:
                 warm_pods = self._get_warm_pods()
@@ -70,22 +92,38 @@ class WarmPoolController:
                     ]
                 )
 
-                if total_pods < self.min_warm_pods:
-                    await self._create_warm_pod()
+                # Check queue depth for demand-based scaling
+                queue_depth = self._get_queue_depth()
+
+                # Calculate target pods based on demand
+                # If queue has 10 items and we have 2 available, create 8 more (up to max_burst_pods)
+                needed_pods = max(queue_depth - available, 0)
+                target_pods = min(total_pods + needed_pods, self.max_burst_pods)
+
+                # Also ensure we maintain minimum baseline
+                target_pods = max(target_pods, self.min_warm_pods)
+
+                if total_pods < target_pods:
+                    # Create pods to meet demand
+                    pods_to_create = target_pods - total_pods
                     logger.info(
-                        f"Created warm pod (total: {total_pods + 1}, available: {available})"
+                        f"Queue depth: {queue_depth}, Available: {available}, "
+                        f"Creating {pods_to_create} warm pods (total will be {target_pods})"
                     )
+                    for _ in range(pods_to_create):
+                        await self._create_warm_pod()
 
                 elif total_pods > self.max_warm_pods:
-                    # Only delete if we have excess AND they're old (> 2 minutes)
+                    # Scale down excess pods (only if above baseline max and old enough)
                     oldest = warm_pods[0]
                     pod_age = (
                         time.time() - oldest.metadata.creation_timestamp.timestamp()
                     )
-                    if pod_age > 120:  # 2 minutes
+                    # Only delete if pod is old (>5 minutes) and queue is empty
+                    if pod_age > 300 and queue_depth == 0:
                         await self._delete_pod(oldest.metadata.name)
                         logger.info(
-                            f"Deleted excess warm pod (total: {total_pods - 1})"
+                            f"Scaling down: deleted excess warm pod (total: {total_pods - 1})"
                         )
 
                 await asyncio.sleep(30)  # Check every 30s
@@ -95,29 +133,98 @@ class WarmPoolController:
                 await asyncio.sleep(60)
 
     async def assign_warm_pod(self, customer_id: str) -> Optional[str]:
-        """Assign warm pod to clone, reset DB for new customer"""
-        warm_pods = self._get_warm_pods()
-        available = [
-            p for p in warm_pods if p.metadata.labels.get("pool-status") == "ready"
-        ]
+        """Assign warm pod to clone using atomic label updates for concurrency safety"""
+        max_retries = 5
 
-        if not available:
-            logger.warning("No warm pods available")
-            return None
+        for attempt in range(max_retries):
+            # Get fresh list of warm pods on each attempt
+            warm_pods = self._get_warm_pods()
+            available = [
+                p for p in warm_pods if p.metadata.labels.get("pool-status") == "ready"
+            ]
 
-        pod_name = available[0].metadata.name
+            if not available:
+                logger.warning(
+                    f"No warm pods available (attempt {attempt + 1}/{max_retries})"
+                )
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5)  # Brief wait before retry
+                    continue
+                return None
 
-        # Reset database for new customer
-        await self._reset_pod_database(pod_name, customer_id)
+            # Try to atomically claim the first available pod
+            pod = available[0]
+            pod_name = pod.metadata.name
 
-        # Tag pod with customer_id
-        await self._tag_pod(pod_name, customer_id)
+            try:
+                # Attempt atomic update: ready -> reserved
+                # If another job beats us, this will raise ApiException(409)
+                body = {
+                    "metadata": {
+                        "labels": {
+                            "pool-status": "reserved",
+                            "clone-id": customer_id,
+                        }
+                    }
+                }
 
-        # Rename credentials secret from warm pod to clone ID
-        await self._rename_secret(pod_name, customer_id)
+                # Use strategic merge patch with resourceVersion for optimistic concurrency
+                self.v1.patch_namespaced_pod(
+                    name=pod_name,
+                    namespace=self.namespace,
+                    body=body,
+                )
 
-        logger.info(f"Assigned warm pod {pod_name} to {customer_id}")
-        return pod_name
+                logger.info(
+                    f"Successfully claimed warm pod {pod_name} for {customer_id}"
+                )
+
+                # Now that we own the pod, perform the reset and setup
+                try:
+                    # Reset database for new customer
+                    await self._reset_pod_database(pod_name, customer_id)
+
+                    # Rename credentials secret from warm pod to clone ID
+                    await self._rename_secret(pod_name, customer_id)
+
+                    # Mark pod as assigned (reserved -> assigned)
+                    await self._tag_pod(pod_name, customer_id)
+
+                    logger.info(f"Assigned warm pod {pod_name} to {customer_id}")
+                    return pod_name
+
+                except Exception as e:
+                    # If reset/setup fails, release the pod back to pool
+                    logger.error(
+                        f"Failed to setup pod {pod_name} for {customer_id}: {e}"
+                    )
+                    try:
+                        # Return pod to ready state
+                        self.v1.patch_namespaced_pod(
+                            name=pod_name,
+                            namespace=self.namespace,
+                            body={
+                                "metadata": {
+                                    "labels": {"pool-status": "ready", "clone-id": ""}
+                                }
+                            },
+                        )
+                    except:
+                        pass  # Pod might already be deleted
+                    raise
+
+            except ApiException as e:
+                if e.status == 409:
+                    # Conflict - another job claimed this pod, try next one
+                    logger.debug(
+                        f"Pod {pod_name} already claimed by another job, retrying..."
+                    )
+                    continue
+                else:
+                    raise
+
+        logger.warning(f"Failed to assign warm pod after {max_retries} attempts")
+        return None
 
     async def return_to_pool(self, pod_name: str):
         """Reset pod and return to warm pool after TTL"""

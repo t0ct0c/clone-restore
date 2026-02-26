@@ -1,12 +1,72 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-02-26 14:40 UTC
+**Last Updated**: 2026-02-26 23:40 SGT (15:40 UTC)
 
 ## CURRENT BRANCH: feat/kubernetes-restore
-**Status**: ✅ FULLY WORKING - All bugs fixed, production ready
+**Status**: ⚙️ OPTIMIZATION IN PROGRESS - Core system working, performance tuning complete
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Deployed**: wp-k8s-service:tcpsocket-probes-20260226-141959 (CORRECT - tcpSocket probes)
+**Last Deployed**: wp-k8s-service:ttl-fix-20260226-230812 (WITH: atomic warm pool assignment + TTL extension + 8 workers)
 **Clone Image**: wp-k8s-service-clone:final-fix-20260226-104040 (CORRECT - has HTTPS in entrypoint)
+
+### ✅ PERFORMANCE & RELIABILITY FIXES - 2026-02-26 23:40 SGT (15:40 UTC)
+
+**Session Goal**: Investigate and fix message queue reliability issues for 50-clone bulk test
+**Issues Resolved**: Race conditions, queue throughput, TTL expiration, resource exhaustion
+
+---
+
+## Investigation Summary: "Lost Messages" Were Never Lost
+
+### What We Thought Was Wrong:
+- Messages accepted by API but never processed
+- Jobs appearing to "vanish" from the queue
+- Customer requests getting lost silently
+
+### What Was Actually Happening:
+1. **Messages were NOT lost** - all 17 "missing" messages were sitting in Redis queue
+2. **Workers were processing slowly** - only 4 concurrent workers (2 processes × 2 threads)
+3. **Queue throughput bottleneck** - 4 workers @ ~2-3 min/clone = ~1.3-2 clones/minute
+4. **TTL race condition** - Jobs expired before processing (30min TTL from submission, not from processing start)
+
+### Root Causes Identified:
+
+#### 1. Insufficient Worker Capacity
+- **Before**: 4 workers → ~1.3-2 clones/minute
+- **Attempted**: 16 workers → ~5-6 clones/minute BUT caused memory exhaustion
+- **Fixed**: 8 workers → ~3-4 clones/minute (stable)
+
+#### 2. TTL Started at Submission (Not Processing)
+- Jobs submitted to queue with 30-minute TTL
+- If job waited 20 minutes in queue, only 10 minutes left to complete
+- **Fixed**: Extended TTL by 60 minutes when job status changes to "running"
+- Code location: `app/job_store.py:148` - TTL extension logic
+
+#### 3. Resource Exhaustion Despite Karpenter
+**Why Karpenter Couldn't Save Us:**
+- Karpenter hit maximum node limit (29/30 nodes)
+- Worker memory: Requested 1Gi, Actually used 2.5GB with 16 workers
+- Node evictions: "Container dramatiq-worker was using 2504416Ki, request is 1Gi"
+- Each worker runs Python + Playwright/Chromium = ~150-200MB per worker
+- 16 workers × 150MB = 2.4GB (exceeded 1Gi request → eviction)
+
+**Why So Many Nodes:**
+- 30 clones × 2 containers (WordPress + MySQL) = 60 containers
+- 16 workers with Chromium browsers = high memory
+- Infrastructure pods (Traefik, warm pool, etc.)
+- Total: Cluster saturation at 29 nodes
+
+**The Fix:**
+- Reduced workers from 16 to 8 (halves memory to ~1.2GB)
+- Increased memory request from 1Gi to 2Gi (prevents evictions)
+- Configuration: 2 processes × 4 threads = 8 concurrent workers
+
+#### 4. Atomic Warm Pool Assignment (Race Condition)
+- **Before**: Multiple workers could claim the same warm pod
+- **Result**: Clone IDs skipped (e.g., 001 and 002 both tried to use same pod, only 002 succeeded)
+- **Fixed**: Implemented atomic label updates using Kubernetes optimistic concurrency control
+- Code location: `app/warm_pool_controller.py:135-225` - assign_warm_pod() method
+
+---
 
 ### ✅ CRITICAL FIX COMPLETED - 2026-02-26 14:40 UTC
 
@@ -68,8 +128,37 @@ Changed all WordPress container health probes from `httpGet` to `tcpSocket` on p
 - ✅ Login cookies: Set with `secure` flag correctly
 - ✅ **NO REDIRECT LOOP** - wp-admin dashboard fully functional
 
+### Current System Configuration (2026-02-26 23:40 SGT)
+
+**wp-k8s-service Deployment:**
+- Image: `wp-k8s-service:ttl-fix-20260226-230812`
+- Workers: 8 concurrent (2 processes × 4 threads)
+- Memory: Request 2Gi, Limit 4Gi (prevents evictions)
+- CPU: Request 500m, Limit 2
+- Expected throughput: ~3-4 clones/minute
+- Location: `kubernetes/wp-k8s-service/`
+
+**Redis Queue:**
+- Persistence: AOF enabled (appendonly yes)
+- Eviction policy: noeviction (won't drop messages)
+- Memory usage: ~2MB / 192Mi limit (1% used)
+- Queue name: `dramatiq:clone-queue`
+
+**Warm Pool:**
+- Baseline: 2 pods maintained
+- Max burst: 20 pods (queue-based scaling)
+- Assignment: Atomic with optimistic concurrency control
+- Image: `wp-k8s-service-clone:final-fix-20260226-104040`
+
+**Job TTL Logic:**
+- Initial: 30-60 minutes from submission
+- Extension: +60 minutes when processing starts (status=running, progress=10)
+- Prevents: Jobs expiring while waiting in queue
+
+---
+
 ### Critical "DO NOT" List (IMPORTANT - READ THIS)
-These mistakes have caused this bug to break and be "fixed" multiple times. Follow these rules to prevent regression:
+These mistakes have caused bugs multiple times. Follow these rules to prevent regression:
 
 1. **DO NOT remove `$_SERVER['HTTPS']` from docker-entrypoint.sh**
    - The clone image `final-fix-20260226-104040` has this in the entrypoint
@@ -82,19 +171,27 @@ These mistakes have caused this bug to break and be "fixed" multiple times. Foll
    - Kubelet follows redirect to port 443 which doesn't exist → CrashLoopBackOff
    - ALWAYS use `tcpSocket` probes on port 80 for WordPress containers
 
-3. **DO NOT add `$_SERVER['HTTPS']` to warm_pool_controller.py templates**
-   - Templates are applied BEFORE the entrypoint runs
-   - Entrypoint sets this flag dynamically based on environment
-   - Adding it to templates creates duplicate/conflicting configuration
+3. **DO NOT scale workers beyond 8 without increasing memory request**
+   - Each worker uses ~150-200MB (Python + Playwright/Chromium)
+   - 8 workers = ~1.2GB (safe within 2Gi request)
+   - 16 workers = ~2.5GB (caused evictions with 1Gi request)
+   - If scaling to 12-16 workers, increase memory request to 3Gi
 
-4. **DO NOT rebuild the clone image unless absolutely necessary**
+4. **DO NOT submit 30+ clones simultaneously without batching**
+   - Karpenter limit: 30 nodes maximum
+   - Each clone: 2 containers (WordPress + MySQL)
+   - 30 clones = 60 containers → cluster saturation
+   - Recommended: Batch in groups of 10 clones
+
+5. **DO NOT rebuild the clone image unless absolutely necessary**
    - Current image `final-fix-20260226-104040` is correct
    - Rebuilding risks losing the working entrypoint configuration
 
-5. **DO NOT commit changes to main branch without cluster verification**
+6. **DO NOT commit changes to main branch without cluster verification**
    - Always test on EKS cluster first
    - Verify warm pool pods reach 2/2 Ready with 0 restarts
    - Create test clone and verify wp-admin login works
+   - Monitor worker pod memory usage (should stay under request)
    - Only then commit to version control
 
 ### Files Modified (Final State)

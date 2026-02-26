@@ -17,7 +17,7 @@ API_HOST_HEADER = "clones.betaweb.ai"
 SOURCE_URL = "https://betaweb.ai"
 SOURCE_USERNAME = "Charles@toctoc.com.au"
 SOURCE_PASSWORD = "6(4b`Nde1i_D"
-CLONE_COUNT = 50
+CLONE_COUNT = 30
 TTL_MINUTES = 30
 POLL_INTERVAL = 10  # Check job status every 10 seconds
 
