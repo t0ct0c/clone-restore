@@ -412,14 +412,14 @@ require_once ABSPATH . 'wp-settings.php';
                         # search-replace.  Use generous thresholds so the
                         # liveness probe does not kill the container mid-import.
                         liveness_probe=client.V1Probe(
-                            http_get=client.V1HTTPGetAction(path="/", port=80),
+                            tcp_socket=client.V1TCPSocketAction(port=80),
                             initial_delay_seconds=60,
                             period_seconds=10,
                             timeout_seconds=5,
                             failure_threshold=12,
                         ),
                         readiness_probe=client.V1Probe(
-                            http_get=client.V1HTTPGetAction(path="/", port=80),
+                            tcp_socket=client.V1TCPSocketAction(port=80),
                             initial_delay_seconds=20,
                             period_seconds=5,
                         ),

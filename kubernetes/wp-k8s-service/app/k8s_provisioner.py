@@ -513,19 +513,14 @@ class K8sProvisioner:
                                         limits={"cpu": "500m", "memory": "1Gi"},
                                     ),
                                     liveness_probe=client.V1Probe(
-                                        http_get=client.V1HTTPGetAction(
-                                            path="/", port=80
-                                        ),
+                                        tcp_socket=client.V1TCPSocketAction(port=80),
                                         initial_delay_seconds=30,
                                         period_seconds=10,
                                         timeout_seconds=5,
                                         failure_threshold=3,
                                     ),
                                     readiness_probe=client.V1Probe(
-                                        http_get=client.V1HTTPGetAction(
-                                            path="/",
-                                            port=80,
-                                        ),
+                                        tcp_socket=client.V1TCPSocketAction(port=80),
                                         initial_delay_seconds=20,
                                         period_seconds=5,
                                         timeout_seconds=3,
@@ -1009,17 +1004,13 @@ class K8sProvisioner:
                                         limits={"cpu": "500m", "memory": "1Gi"},
                                     ),
                                     liveness_probe=client.V1Probe(
-                                        http_get=client.V1HTTPGetAction(
-                                            path="/", port=80
-                                        ),
+                                        tcp_socket=client.V1TCPSocketAction(port=80),
                                         initial_delay_seconds=120,
                                         period_seconds=10,
                                         failure_threshold=10,
                                     ),
                                     readiness_probe=client.V1Probe(
-                                        http_get=client.V1HTTPGetAction(
-                                            path="/", port=80
-                                        ),
+                                        tcp_socket=client.V1TCPSocketAction(port=80),
                                         initial_delay_seconds=30,
                                         failure_threshold=6,
                                         period_seconds=5,
@@ -1054,9 +1045,9 @@ class K8sProvisioner:
                                     liveness_probe=client.V1Probe(
                                         _exec=client.V1ExecAction(
                                             command=[
-                                                "mysqladmin",
-                                                "ping",
-                                                "-h127.0.0.1",
+                                                "bash",
+                                                "-c",
+                                                "mysqladmin ping -h127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD 2>/dev/null",
                                             ]
                                         ),
                                         initial_delay_seconds=30,
@@ -1065,9 +1056,9 @@ class K8sProvisioner:
                                     readiness_probe=client.V1Probe(
                                         _exec=client.V1ExecAction(
                                             command=[
-                                                "mysqladmin",
-                                                "ping",
-                                                "-h127.0.0.1",
+                                                "bash",
+                                                "-c",
+                                                "mysqladmin ping -h127.0.0.1 -u root -p$MYSQL_ROOT_PASSWORD 2>/dev/null",
                                             ]
                                         ),
                                         initial_delay_seconds=5,

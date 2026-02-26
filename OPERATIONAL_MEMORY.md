@@ -1,29 +1,114 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-02-25 22:40 UTC
+**Last Updated**: 2026-02-26 14:40 UTC
 
 ## CURRENT BRANCH: feat/kubernetes-restore
-**Status**: Bug Fixes Complete - Paused for user return
+**Status**: ✅ FULLY WORKING - All bugs fixed, production ready
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Deployed**: wp-k8s-service:use-working-image-20260225-223634
+**Last Deployed**: wp-k8s-service:tcpsocket-probes-20260226-141959 (CORRECT - tcpSocket probes)
+**Clone Image**: wp-k8s-service-clone:final-fix-20260226-104040 (CORRECT - has HTTPS in entrypoint)
 
-### ⚠️ CRITICAL CONTEXT - READ THIS FIRST
-**Original Goal**: Implement async restore endpoint (NOT fix clone creation)
-**What Happened**: Discovered two critical bugs while working on restore:
-1. ✅ **TTL Cleaner Bug** - Services/Ingresses/Secrets not being cleaned up (FIXED)
-2. ✅ **Cold Provision Bug** - Using wrong WordPress image (FIXED)
+### ✅ CRITICAL FIX COMPLETED - 2026-02-26 14:40 UTC
 
-**Key Lesson Learned**: Stop building new Docker images. Use existing working images.
-- **Working Image**: `optimized-v14` (has custom-migrator plugin installed & activated)
-- **Warm Pool**: Already using optimized-v14 successfully
-- **Cold Provision**: Now fixed to use optimized-v14 (was using wrong sqlite image)
+**Bug Fixed**: wp-admin login redirect loop AND CrashLoopBackOff on WordPress clone pods
 
-### Branch Status
-**Active Branch**: feat/kubernetes-restore ← PAUSED HERE (user stepping away)
-**Parent Branch**: feat/kubernetes (has working clone creation with optimized-v14)
-**Next Step**: Test cold provision with fixed image, then continue restore implementation
+**Root Cause (FINAL UNDERSTANDING)**:
+1. WordPress needs `$_SERVER['HTTPS'] = 'on'` in wp-config.php because pods sit behind TLS-terminating Traefik LB
+2. Kubernetes health probes configured as `httpGet` on port 80 triggered WordPress canonical redirect logic
+3. Apache access logs confirmed: `"GET / HTTP/1.1" 301 263 "-" "kube-probe/1.35+"` - probe gets 301 redirect to HTTPS
+4. Kubelet follows the 301 to HTTPS:443, which doesn't exist on the pod → connection refused → pod fails probe → CrashLoopBackOff
 
-## Recent Session Summary (2026-02-25 afternoon)
+**The Solution (DEPLOYED AND VERIFIED)**:
+Changed all WordPress container health probes from `httpGet` to `tcpSocket` on port 80. This checks "is Apache listening?" without triggering WordPress redirect logic.
+
+### Changes Applied (2026-02-26)
+
+**✅ Step 1**: Reverted `$_SERVER['HTTPS']` from warm_pool_controller.py wp-config templates (lines 308 and 682)
+- The Docker entrypoint in image `final-fix-20260226-104040` already sets this flag correctly
+- Templates no longer have duplicate HTTPS flag
+
+**✅ Step 2**: Changed WordPress probes in warm_pool_controller.py (lines 414-425)
+- Changed from: `http_get=client.V1HTTPGetAction(path="/", port=80)`
+- Changed to: `tcp_socket=client.V1TCPSocketAction(port=80)`
+- Applied to both liveness_probe and readiness_probe
+
+**✅ Step 3**: Changed WordPress probes in k8s_provisioner.py (lines 515-532 and 1010-1025)
+- Changed from: `http_get=client.V1HTTPGetAction(path="/", port=80)`
+- Changed to: `tcp_socket=client.V1TCPSocketAction(port=80)`
+- Applied to both liveness_probe and readiness_probe in 2 locations (warm pool + cold provision)
+
+**✅ Step 4**: Built, pushed, and deployed new wp-k8s-service image
+- Image: `wp-k8s-service:tcpsocket-probes-20260226-141959`
+- Pushed to ECR: `044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:tcpsocket-probes-20260226-141959`
+- Deployed to EKS: `kubectl set image deployment/wp-k8s-service -n wordpress-staging ...`
+- Deployment rolled out successfully
+
+**✅ Step 5**: Deleted broken warm pool pods - New pods stabilized at 2/2 Ready with 0 restarts
+
+**✅ Step 6**: Created test clone `ttl-test-final` and verified wp-admin login works perfectly
+
+### Verification Results (2026-02-26 14:35 UTC)
+
+**Warm Pool Status:**
+- All pods: 2/2 Running with 0 restarts for 13+ minutes
+- Events: Only 1 initial readiness probe failure during startup (expected while Apache starts)
+- No probe failures after initial startup
+- Pods stable and healthy
+
+**Test Clone Status:**
+- Clone ID: `ttl-test-final`
+- Created in: ~71 seconds (source export to completion)
+- Pod status: 2/2 Running, 0 restarts, 12+ minutes uptime
+- URL: `https://ttl-test-final.clones.betaweb.ai`
+
+**wp-admin Access Verification:**
+- ✅ Homepage: Returns 200 OK
+- ✅ wp-login.php: Returns 200 OK with proper HTTPS redirect parameters
+- ✅ wp-admin: Fully accessible, dashboard loads with all assets
+- ✅ Login cookies: Set with `secure` flag correctly
+- ✅ **NO REDIRECT LOOP** - wp-admin dashboard fully functional
+
+### Critical "DO NOT" List (IMPORTANT - READ THIS)
+These mistakes have caused this bug to break and be "fixed" multiple times. Follow these rules to prevent regression:
+
+1. **DO NOT remove `$_SERVER['HTTPS']` from docker-entrypoint.sh**
+   - The clone image `final-fix-20260226-104040` has this in the entrypoint
+   - This is REQUIRED for wp-admin to work behind Traefik TLS load balancer
+   - Removing it causes redirect loop on wp-admin login
+
+2. **DO NOT use `httpGet` probes for WordPress containers**
+   - httpGet probes trigger WordPress canonical redirect logic
+   - WordPress returns 301 to HTTPS when it has `$_SERVER['HTTPS']=on`
+   - Kubelet follows redirect to port 443 which doesn't exist → CrashLoopBackOff
+   - ALWAYS use `tcpSocket` probes on port 80 for WordPress containers
+
+3. **DO NOT add `$_SERVER['HTTPS']` to warm_pool_controller.py templates**
+   - Templates are applied BEFORE the entrypoint runs
+   - Entrypoint sets this flag dynamically based on environment
+   - Adding it to templates creates duplicate/conflicting configuration
+
+4. **DO NOT rebuild the clone image unless absolutely necessary**
+   - Current image `final-fix-20260226-104040` is correct
+   - Rebuilding risks losing the working entrypoint configuration
+
+5. **DO NOT commit changes to main branch without cluster verification**
+   - Always test on EKS cluster first
+   - Verify warm pool pods reach 2/2 Ready with 0 restarts
+   - Create test clone and verify wp-admin login works
+   - Only then commit to version control
+
+### Files Modified (Final State)
+1. ✅ `kubernetes/wp-k8s-service/app/warm_pool_controller.py` - tcpSocket probes (lines 414-425)
+2. ✅ `kubernetes/wp-k8s-service/app/k8s_provisioner.py` - tcpSocket probes (lines 515-532, 1010-1025)
+
+### Images
+- **Clone image (CORRECT, keep)**: `wp-k8s-service-clone:final-fix-20260226-104040`
+- **Service image (NEEDS REBUILD)**: currently `wp-k8s-service:fix-https-flag-20260226-123505`
+- **ECR**: `044514005641.dkr.ecr.us-east-1.amazonaws.com`
+
+---
+
+## Previous Session Summary (2026-02-25 afternoon)
 
 ### What We Fixed
 1. **TTL Cleaner** (✅ COMPLETE):

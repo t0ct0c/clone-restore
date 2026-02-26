@@ -1,119 +1,86 @@
 # Next Steps - Resume Point for feat/kubernetes-restore
 
-**Date**: 2026-02-25 22:45 UTC
+**Date**: 2026-02-26 05:05 UTC
 **Branch**: feat/kubernetes-restore
-**Deployed**: wp-k8s-service:use-working-image-20260225-223634
+**Status**: ACTIVE BUG - CrashLoopBackOff + wp-admin login redirect
 
-## What We Just Fixed (Complete)
+## The Problem
 
-### 1. TTL Cleaner Bug ✅
-- **Problem**: Services, Ingresses, Secrets not being cleaned up when clones expired
-- **Fix**: Added `ttl-expires-at` labels to all resources
-- **Status**: FIXED and deployed
-- **Evidence**: Cleaned up 17 services, 7 ingresses, 36 secrets
+Two conflicting requirements:
+1. `$_SERVER['HTTPS'] = 'on'` in wp-config.php is NEEDED for wp-admin login (pods behind TLS LB)
+2. Kubernetes `httpGet` probes on port 80 get 301-redirected to HTTPS:443 by WordPress, which doesn't exist
 
-### 2. WordPress Image Bug ✅  
-- **Problem**: Cold provision using wrong image (wordpress-target-sqlite:latest)
-- **Fix**: Updated k8s_provisioner.py to use optimized-v14 (same as warm pool)
-- **Status**: FIXED and deployed
-- **Evidence**: Warm pool successfully uses optimized-v14, plugin installed & activated
+Apache logs confirm: `"GET / HTTP/1.1" 301 263 "-" "kube-probe/1.35+"`
 
-## What to Do When You Return
+## The Fix
 
-### Step 1: Test Cold Provision (5 minutes)
+Change health probes from `httpGet` to `tcpSocket` on port 80. This checks "is Apache listening?" without WordPress redirect logic.
+
+## Step-by-Step Execution
+
+### Step 1: Revert warm_pool_controller.py templates
+Remove `$_SERVER['HTTPS'] = 'on';` from BOTH wp-config templates in warm_pool_controller.py.
+Not needed there - the Docker entrypoint (image `final-fix-20260226-104040`) already handles this.
+
+```python
+# Line ~308 and ~682: REMOVE this line from both templates
+$_SERVER['HTTPS'] = 'on';
+```
+
+### Step 2: Change probes in warm_pool_controller.py (~lines 415-430)
+```python
+# FROM:
+liveness_probe=client.V1Probe(
+    http_get=client.V1HTTPGetAction(path="/", port=80),
+    ...
+)
+# TO:
+liveness_probe=client.V1Probe(
+    tcp_socket=client.V1TCPSocketAction(port=80),
+    ...
+)
+```
+Same for readiness_probe.
+
+### Step 3: Change probes in k8s_provisioner.py (~lines 515-532)
+Same httpGet → tcpSocket change for cold provision path.
+
+### Step 4: Build and deploy
 ```bash
-# Create a test clone to verify cold provision works
-curl -X POST https://clones.betaweb.ai/provision \
+# Build (from kubernetes/wp-k8s-service/)
+docker build -t wp-k8s-service:probe-fix-$(date +%Y%m%d-%H%M%S) .
+
+# Tag and push
+docker tag wp-k8s-service:<tag> 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:<tag>
+docker push 044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:<tag>
+
+# Deploy
+kubectl set image deployment/wp-k8s-service wp-k8s-service=044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service:<tag> -n wordpress-staging
+```
+
+### Step 5: Reset warm pool
+```bash
+kubectl delete pod -n wordpress-staging -l pool-type=warm
+# Wait for new pods to spawn
+kubectl get pods -n wordpress-staging -l pool-type=warm -w
+# Verify 2/2 Ready, 0 restarts
+```
+
+### Step 6: Test clone
+```bash
+curl -s -X POST https://clones.betaweb.ai/api/v2/clone \
   -H "Content-Type: application/json" \
-  -d '{"customer_id": "test-cold-'$(date +%s)'", "ttl_minutes": 30}'
+  -d '{"source_url": "https://bonnel.ai", "source_username": "admin", "source_password": "ygu8GZ9jSjCHIF6S", "customer_id": "probe-fix-test-'$(date +%s)'", "ttl_minutes": 30}'
 
-# Wait for pod to be ready
-kubectl wait --for=condition=ready pod -l clone-id=test-cold-* -n wordpress-staging --timeout=120s
-
-# Test the custom-migrator REST API endpoint
-curl -s http://test-cold-*.clones.betaweb.ai/wp-json/custom-migrator/v1/import
-
-# Expected: Should NOT return 404 (plugin should be found)
+# Check job status, then try wp-admin login
 ```
 
-### Step 2: Clean Up Test Clones (2 minutes)
-```bash
-# Delete all the test clones we created during debugging
-kubectl delete deployment -n wordpress-staging absolute-final-1772029141
-kubectl delete deployment -n wordpress-staging final-verify-1772029068
-kubectl delete deployment -n wordpress-staging ultimate-test-1772028486
-kubectl delete deployment -n wordpress-staging victory-test-1772028673
-kubectl delete deployment -n wordpress-staging final-mysql-wait-1772028288
-kubectl delete deployment -n wordpress-staging wpcli-test-1772028003
+## Do NOT
+- Remove HTTPS from docker-entrypoint.sh (it's correct there)
+- Use httpGet probes for WordPress containers
+- Commit before verifying on cluster
+- Rebuild the clone Docker image
 
-# Or use the cleanup script
-python scripts/delete-clones.py
-```
-
-### Step 3: Continue Restore Implementation (Original Goal)
-The async restore endpoint is already implemented but NOT tested:
-- Endpoint: `POST /api/v2/restore`
-- Test script: `scripts/restore-single.py`
-- Documentation: `TEST_SCENARIO.md`
-
-```bash
-# Test the restore endpoint
-python scripts/restore-single.py
-```
-
-## Important Reminders
-
-### ❌ DON'T DO THESE
-1. **Don't build new WordPress clone images** - optimized-v14 works perfectly
-2. **Don't modify docker-entrypoint.sh** - it's working as-is in optimized-v14
-3. **Don't add WP-CLI plugin activation code** - plugin already activated in image
-4. **Don't assume something is broken** - check what's working first (warm pool)
-
-### ✅ DO THESE
-1. **Check warm pool first** when debugging - it's the working reference
-2. **Use existing working images** instead of building new ones
-3. **Test cold provision** after image changes
-4. **Focus on restore implementation** - that's the actual goal
-
-## Current Infrastructure State
-
-**Working**:
-- Warm pool: 2 pods using optimized-v14 ✅
-- wp-k8s-service: deployed with correct image reference ✅
-- TTL cleaner: fixed to clean all resources ✅
-
-**To Verify**:
-- Cold provision with optimized-v14 image
-- Async restore endpoint functionality
-
-## Files Modified This Session
-
-1. `kubernetes/wp-k8s-service/app/k8s_provisioner.py`:
-   - Line 47: Changed to optimized-v14
-   - Line 197-198: Removed plugin activation call
-   - Lines 855-881: Added TTL labels to Services
-   - Lines 617-677: Added TTL labels to Ingresses
-   - Lines 854-876: Added `_add_ttl_to_secret()` method
-
-2. `kubernetes/wp-k8s-service/app/warm_pool_controller.py`:
-   - Line 38: Already using optimized-v14 (no change needed)
-
-3. `kubernetes/wp-k8s-service/app/ttl_cleaner.py`:
-   - Lines 130-167: Enhanced to delete Service, Ingress, Secret
-
-4. `kubernetes/manifests/base/wp-k8s-service/deployment.yaml`:
-   - Updated to wp-k8s-service:use-working-image-20260225-223634
-
-5. Created `scripts/cleanup-orphaned-resources.py`
-
-## Commit History
-```
-13a153c - fix: use working optimized-v14 image for cold provision
-95088b4 - Update warm_pool_controller to use WP-CLI WordPress image (REVERTED)
-35d0bd3 - CRITICAL FIX: Activate custom-migrator plugin (NO LONGER NEEDED)
-5cac52e - fix: update dramatiq-worker to new image and increase memory limits
-3ca3639 - fix: add TTL labels to Services, Ingresses, and Secrets (KEEPER)
-bd21674 - feat: add script to cleanup orphaned K8s resources (KEEPER)
-```
-
-Last 2 commits are the important ones. Middle commits were part of the circular troubleshooting.
+## Current Images
+- Clone (KEEP): `wp-k8s-service-clone:final-fix-20260226-104040`
+- Service (NEEDS REBUILD): `wp-k8s-service:fix-https-flag-20260226-123505`
