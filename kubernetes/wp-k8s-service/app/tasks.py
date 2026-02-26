@@ -67,8 +67,11 @@ async def clone_wordpress(job_id: str) -> Dict:
 
         if not source_result.get("success"):
             error_msg = source_result.get("message", "Source setup failed")
-            await job_store.update_job_status(job_id, JobStatus.failed, error=error_msg)
-            return {"success": False, "error": error_msg}
+            # Include provision credentials even on failure so users can access the clone
+            await job_store.update_job_status(
+                job_id, JobStatus.failed, error=error_msg, result=provision_result
+            )
+            return {"success": False, "error": error_msg, **provision_result}
 
         await job_store.update_job_status(job_id, JobStatus.running, progress=50)
 
@@ -84,8 +87,11 @@ async def clone_wordpress(job_id: str) -> Dict:
 
         if not target_result.get("success"):
             error_msg = target_result.get("message", "Target setup failed")
-            await job_store.update_job_status(job_id, JobStatus.failed, error=error_msg)
-            return {"success": False, "error": error_msg}
+            # Include provision credentials even on failure so users can access the clone
+            await job_store.update_job_status(
+                job_id, JobStatus.failed, error=error_msg, result=provision_result
+            )
+            return {"success": False, "error": error_msg, **provision_result}
 
         await job_store.update_job_status(job_id, JobStatus.running, progress=70)
 
@@ -103,8 +109,11 @@ async def clone_wordpress(job_id: str) -> Dict:
 
         if not clone_result.get("success"):
             error_msg = clone_result.get("message", "Clone failed")
-            await job_store.update_job_status(job_id, JobStatus.failed, error=error_msg)
-            return {"success": False, "error": error_msg}
+            # Include provision credentials even on failure so users can access the clone
+            await job_store.update_job_status(
+                job_id, JobStatus.failed, error=error_msg, result=provision_result
+            )
+            return {"success": False, "error": error_msg, **provision_result}
 
         # Step 5: Ensure HTTPS flag survives import plugin's wp-config rewrite.
         # Pods sit behind a TLS-terminating LB so WordPress always receives
