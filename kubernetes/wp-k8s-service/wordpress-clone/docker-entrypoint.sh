@@ -32,7 +32,8 @@ WORDPRESS_DB_PASSWORD="${WORDPRESS_DB_PASSWORD}"
 # ------------------------------------------------------------------
 if [[ ! -f /var/www/html/wp-config.php ]]; then
     echo "Creating wp-config.php..."
-    SITE_URL="http://localhost"
+    # Use WP_SITE_URL env var if set, otherwise fall back to localhost
+    SITE_URL="${WP_SITE_URL:-http://localhost}"
     cat > /var/www/html/wp-config.php << EOFCONFIG
 <?php
 define('DB_NAME', '$WORDPRESS_DB_NAME');
@@ -45,6 +46,9 @@ define('DB_COLLATE', '');
 define('WP_DEBUG', false);
 define('WP_SITEURL', '$SITE_URL');
 define('WP_HOME', '$SITE_URL');
+
+/* Force HTTPS - pods are behind TLS-terminating load balancer */
+\$_SERVER['HTTPS'] = 'on';
 
 if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ . '/' );

@@ -35,7 +35,7 @@ class WarmPoolController:
         self.apps_v1 = client.AppsV1Api()
 
         # Pod configuration
-        self.warm_pod_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:wp69-20260226-093654"
+        self.warm_pod_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:final-fix-20260226-104040"
         self.mysql_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/mysql:8.0"
         self.resources = {
             "requests": {"cpu": "250m", "memory": "512Mi"},
