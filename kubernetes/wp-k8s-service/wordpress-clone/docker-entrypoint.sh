@@ -99,10 +99,25 @@ if [[ ! -d /var/www/html/wp-content/plugins/custom-migrator ]] && [[ -f /plugin.
     echo "Installing custom-migrator plugin..."
     wp plugin install /plugin.zip --activate --allow-root --path=/var/www/html
     echo "custom-migrator plugin installed and activated"
+    
+    # Set the plugin API key to match what the importer expects
+    echo "Setting plugin API key..."
+    wp option update custom_migrator_api_key "migration-master-key" --allow-root --path=/var/www/html
+    echo "Plugin API key set to: migration-master-key"
 elif [[ -d /var/www/html/wp-content/plugins/custom-migrator ]]; then
     echo "custom-migrator plugin already exists"
     # Ensure it's activated
     wp plugin activate custom-migrator --allow-root --path=/var/www/html 2>/dev/null || true
+    
+    # Ensure API key is set (in case plugin was installed but key wasn't)
+    CURRENT_KEY=$(wp option get custom_migrator_api_key --allow-root --path=/var/www/html 2>/dev/null || echo "")
+    if [[ -z "$CURRENT_KEY" ]]; then
+        echo "Setting plugin API key..."
+        wp option update custom_migrator_api_key "migration-master-key" --allow-root --path=/var/www/html
+        echo "Plugin API key set to: migration-master-key"
+    else
+        echo "Plugin API key already set"
+    fi
 else
     echo "WARNING: /plugin.zip not found, custom-migrator plugin not installed"
 fi

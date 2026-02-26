@@ -44,7 +44,7 @@ class K8sProvisioner:
         # Configuration from environment variables
         self.docker_image = os.getenv(
             "WORDPRESS_IMAGE",
-            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:plugin-fixed-20260226-083515",
+            "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:api-key-fix-20260226-084612",
         )
         self.traefik_dns = os.getenv("TRAEFIK_DNS", "clones.betaweb.ai")
 
