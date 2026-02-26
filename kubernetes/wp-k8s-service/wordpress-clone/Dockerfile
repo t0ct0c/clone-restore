@@ -1,4 +1,4 @@
-FROM wordpress:6.4-apache
+FROM wordpress:6.9-apache
 
 # Install MySQL client, WP-CLI, and required tools
 RUN apt-get update && \
