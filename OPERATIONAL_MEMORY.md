@@ -1,12 +1,18 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-02-26 23:40 SGT (15:40 UTC)
+**Last Updated**: 2026-02-27 15:01 SGT (07:01 UTC)
 
 ## CURRENT BRANCH: feat/kubernetes-restore
-**Status**: ⚙️ OPTIMIZATION IN PROGRESS - Core system working, performance tuning complete
+**Status**: ✅ READY FOR 10-CLONE DEMO - System stable, 10 active test clones running
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Deployed**: wp-k8s-service:ttl-fix-20260226-230812 (WITH: atomic warm pool assignment + TTL extension + 8 workers)
+**Last Deployed**: wp-k8s-service:ttl-cleaner-fix-20260227-134158 (WITH: TTL cleanup + secret deletion + bulk script fixes)
 **Clone Image**: wp-k8s-service-clone:final-fix-20260226-104040 (CORRECT - has HTTPS in entrypoint)
+**Current System State**: 
+- 10 active test clones (load-test-001 through load-test-010) created ~20 minutes ago
+- 4 warm pool pods ready (2/2 Running, 0 restarts)
+- 9 assigned pods (pool-type=assigned) running test clones
+- TTL cleaner running every 5 minutes (last run: 07:00 UTC)
+- All clones accessible via HTTPS subdomains
 
 ### ✅ PERFORMANCE & RELIABILITY FIXES - 2026-02-26 23:40 SGT (15:40 UTC)
 

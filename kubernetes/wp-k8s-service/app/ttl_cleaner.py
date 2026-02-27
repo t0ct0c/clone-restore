@@ -163,6 +163,13 @@ def cleanup_expired_clones():
                     logger.info(f"  Deleting orphaned pod {name}")
                     try:
                         core_api.delete_namespaced_pod(name, namespace)
+                        # Delete pod's secret
+                        try:
+                            core_api.delete_namespaced_secret(
+                                f"{name}-credentials", namespace
+                            )
+                        except:
+                            pass
                         deleted_count += 1
                     except:
                         pass
@@ -175,6 +182,13 @@ def cleanup_expired_clones():
                     )
                 try:
                     core_api.delete_namespaced_pod(name, namespace)
+                    # Delete pod's secret
+                    try:
+                        core_api.delete_namespaced_secret(
+                            f"{name}-credentials", namespace
+                        )
+                    except:
+                        pass
                     deleted_count += 1
                 except:
                     pass
