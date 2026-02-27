@@ -423,32 +423,6 @@ aws ce get-cost-and-usage \
 
 ---
 
-## Cost Comparison: Alternative Architectures
-
-### Option 1: Current (EKS + Karpenter + Spot)
-**Monthly Cost**: $150-300
-**Pros**: Flexible, auto-scales, production-ready
-**Cons**: Complex to manage
-
-### Option 2: EC2 Auto-Scaling Groups
-**Monthly Cost**: $200-400
-**Pros**: Simpler than EKS
-**Cons**: Less flexible, manual scaling tuning
-
-### Option 3: Fargate (Serverless)
-**Monthly Cost**: $300-600
-**Pros**: No node management
-**Cons**: 2-3× more expensive, slower cold starts
-
-### Option 4: Lambda + ECS
-**Monthly Cost**: $100-200
-**Pros**: Cheaper for intermittent workloads
-**Cons**: Not suitable for long-running WordPress clones
-
-**Recommendation**: **Current architecture is optimal** for this use case
-
----
-
 ## Summary & Recommendations
 
 ### Current State
