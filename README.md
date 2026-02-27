@@ -4,13 +4,19 @@ Simple API for cloning WordPress sites and restoring them to production.
 
 ## System Architecture
 
-### Infrastructure Overview
+### Infrastructure Overview (Current Production)
 - **Cluster:** EKS (wp-clone-restore) in us-east-1
 - **Namespace:** wordpress-staging
+- **Workers:** 4 concurrent (2 processes × 2 threads)
 - **Load Balancer:** Traefik (TLS termination)
-- **Queue:** Redis (async job processing)
-- **Storage:** Local MySQL sidecar per pod (no shared DB)
+- **Queue:** Redis (async job processing via Dramatiq)
+- **Storage:** Local MySQL sidecar per pod (no shared DB bottleneck)
 - **Domain:** *.clones.betaweb.ai
+- **Warm Pool:** 2-20 pods (dynamic scaling based on queue depth)
+
+### Architecture Diagram
+
+This diagram shows the complete clone workflow from user request to cleanup. Green boxes are API endpoints, blue is Redis queue, orange is worker operations, purple is decision points, navy is Kubernetes operations, and cyan is warm pool components.
 
 ```mermaid
 flowchart TD
@@ -24,26 +30,29 @@ flowchart TD
     
     Worker --> PoolCheck{Warm Pool<br/>Available?}
     
-    %% Warm Pool Path
-    PoolCheck -->|Yes 2-3 pods ready| WarmAssign[Assign Warm Pod<br/>~8 seconds]
-    WarmAssign --> ResetDB[Reset MySQL Database<br/>wp db reset]
-    ResetDB --> WPInstall[wp core install<br/>Create admin user]
-    WPInstall --> PluginSetup[Install custom-migrator<br/>Set API key]
-    PluginSetup --> TagPod[Update Pod Labels<br/>Clone ID + TTL]
+    %% Warm Pool Path (Fast: pre-configured pods)
+    PoolCheck -->|Yes<br/>Pod ready| WarmAssign[Assign Warm Pod<br/>INSTANT ~2s<br/>Atomic label update]
+    WarmAssign --> TagPod[Tag Pod with<br/>Clone ID + TTL + Assigned]
+    TagPod --> CreateSecret[Create Secret<br/>Clone credentials]
     
-    %% Cold Provision Path
-    PoolCheck -->|No| ColdDeploy[Create K8s Resources<br/>Pod + Service + Ingress<br/>~80 seconds]
-    ColdDeploy --> Containers[Start Containers<br/>WordPress + MySQL sidecar]
-    Containers --> WPInstall
+    %% Cold Provision Path (Slow: create from scratch)
+    PoolCheck -->|No<br/>Pool empty| ColdDeploy[Create K8s Resources<br/>Pod + Service + Ingress<br/>~60-80 seconds]
+    ColdDeploy --> WaitReady[Wait for Pod Ready<br/>WordPress + MySQL init]
+    WaitReady --> ConfigWP[Run wp-install<br/>Set admin password]
+    ConfigWP --> CreateSecret
     
-    %% Common Path
-    TagPod --> CreateService[Create Service<br/>ClusterIP]
-    CreateService --> CreateIngress[Create Ingress<br/>Traefik routing]
-    CreateIngress --> SetupSource[Browser: Login to Source<br/>Get API key]
-    SetupSource --> Export[Export from Source<br/>~30 seconds]
-    Export --> Import[Import to Clone<br/>~20 seconds]
-    Import --> SetHTTPS[Set HTTPS flag<br/>For TLS load balancer]
-    SetHTTPS --> CloneComplete[Clone Complete<br/>job_id status: completed]
+    %% Common Path (both warm & cold)
+    CreateSecret --> CreateService[Create Service<br/>ClusterIP]
+    CreateService --> CreateIngress[Create Ingress<br/>Traefik routing<br/>clone-id.clones.betaweb.ai]
+    CreateIngress --> CheckCache{Source API Key<br/>Cached?}
+    CheckCache -->|Yes| UseCache[Use Cached Key<br/>~1 second]
+    CheckCache -->|No| BrowserSetup[Browser Automation<br/>Login + Upload Plugin<br/>Get API key<br/>~30-40 seconds]
+    BrowserSetup --> CacheKey[Cache API Key<br/>24hr TTL]
+    CacheKey --> Export[REST: Export from Source<br/>~15-20 seconds]
+    UseCache --> Export
+    Export --> Import[REST: Import to Clone<br/>MySQL + Files<br/>~15-20 seconds]
+    Import --> PostClone[Post-clone fixes<br/>Set HTTPS flag<br/>Update wp-config]
+    PostClone --> CloneComplete[Clone Complete<br/>Status: completed<br/>Progress: 100%]
     
     %% Restore Flow
     CloneOrRestore -->|Restore| RestoreAPI[POST /api/v2/restore<br/>Returns job_id immediately]
@@ -66,27 +75,30 @@ flowchart TD
     StatusCheck -->|failed| ShowError([Error Message])
     GetCreds --> Access[Access Clone<br/>https://id.clones.betaweb.ai]
     
-    %% TTL Cleanup
-    CloneComplete --> TTL[TTL Cleaner CronJob<br/>Every 5 minutes]
-    TTL --> CheckExpiry{TTL<br/>Expired?}
-    CheckExpiry -->|Yes| DeleteRes[Delete Pod + Service<br/>+ Ingress + Secret]
-    CheckExpiry -->|No| TTL
-    DeleteRes --> ReturnPool[Return to Warm Pool<br/>if applicable]
+    %% TTL Cleanup (Automatic)
+    CloneComplete --> TTL[TTL Cleaner CronJob<br/>Runs every 5 minutes<br/>Checks ttl-timestamp labels]
+    TTL --> CheckExpiry{Clone<br/>Expired?}
+    CheckExpiry -->|Yes<br/>Past TTL| DeleteAll[Delete Resources:<br/>1. Service<br/>2. Ingress<br/>3. Clone Secret<br/>4. Pod<br/>5. Pod Secret]
+    CheckExpiry -->|No<br/>Still valid| WaitNext[Wait 5 minutes]
+    WaitNext --> TTL
+    DeleteAll --> PoolReplenish[Warm Pool Controller<br/>Creates new pod<br/>to maintain baseline]
     
-    %% Infrastructure Components
-    subgraph EKS["EKS Cluster: wp-clone-restore"]
+    %% Infrastructure Components (Current Deployment)
+    subgraph EKS["EKS Cluster: wp-clone-restore (us-east-1)"]
         subgraph NS["Namespace: wordpress-staging"]
-            WarmPod1[Warm Pod 1<br/>WordPress + MySQL]
-            WarmPod2[Warm Pod 2<br/>WordPress + MySQL]
-            ClonePods[Clone Pods<br/>customer-id pods]
-            RedisQueue
-            Worker
+            WarmPod1[Warm Pod 1<br/>pool-type=warm<br/>Pre-configured<br/>WordPress + MySQL]
+            WarmPod2[Warm Pod 2<br/>pool-type=warm<br/>Pre-configured<br/>WordPress + MySQL]
+            ClonePods[Assigned Pods<br/>pool-type=assigned<br/>Clone ID labels<br/>WordPress + MySQL]
+            RedisQueue[(Redis Queue<br/>dramatiq:clone-queue<br/>Job persistence)]
+            Worker[Dramatiq Workers<br/>4 concurrent<br/>2 processes × 2 threads<br/>Memory: 1Gi-4Gi]
+            WPAPI[wp-k8s-service API<br/>FastAPI<br/>Port 8000]
         end
-        Traefik[Traefik Ingress<br/>TLS Termination]
+        Traefik[Traefik Ingress<br/>TLS Termination<br/>*.clones.betaweb.ai]
     end
     
-    Internet([Internet]) --> Traefik
+    Internet([Internet<br/>HTTPS]) --> Traefik
     Traefik --> ClonePods
+    WPAPI --> RedisQueue
     
     %% Styling
     classDef apiClass fill:#4CAF50,stroke:#2E7D32,color:#fff
@@ -96,12 +108,12 @@ flowchart TD
     classDef k8sClass fill:#326CE5,stroke:#1A4D8F,color:#fff
     classDef poolClass fill:#00BCD4,stroke:#006064,color:#fff
     
-    class CloneAPI,RestoreAPI,Monitor apiClass
+    class CloneAPI,RestoreAPI,Monitor,WPAPI apiClass
     class RedisQueue queueClass
-    class Worker,RestoreWorker,WarmAssign,ResetDB,WPInstall,PluginSetup,Export,Import,SourceSetup,SourceExport,TargetSetup,TargetImport workerClass
-    class CloneOrRestore,PoolCheck,StatusCheck,CheckExpiry decisionClass
-    class TagPod,CreateService,CreateIngress,ColdDeploy,Containers,DeleteRes k8sClass
-    class WarmPod1,WarmPod2,ReturnPool poolClass
+    class Worker,RestoreWorker,WarmAssign,Export,Import,SourceSetup,SourceExport,TargetSetup,TargetImport,BrowserSetup,UseCache,CacheKey,PostClone,ConfigWP,WaitReady workerClass
+    class CloneOrRestore,PoolCheck,StatusCheck,CheckExpiry,CheckCache decisionClass
+    class TagPod,CreateService,CreateIngress,ColdDeploy,DeleteAll,CreateSecret k8sClass
+    class WarmPod1,WarmPod2,PoolReplenish,ClonePods poolClass
 ```
 
 ## Quick Start

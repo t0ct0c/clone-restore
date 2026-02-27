@@ -1,18 +1,55 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-02-27 15:01 SGT (07:01 UTC)
+**Last Updated**: 2026-02-27 15:30 SGT (07:30 UTC) - SYSTEM AUDITED AGAINST LIVE CLUSTER
 
-## CURRENT BRANCH: feat/kubernetes-restore
-**Status**: ✅ READY FOR 10-CLONE DEMO - System stable, 10 active test clones running
+## CURRENT BRANCH: feat/kubernetes
+**Status**: ✅ PRODUCTION READY - All fixes merged, system stable and idle
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Deployed**: wp-k8s-service:ttl-cleaner-fix-20260227-134158 (WITH: TTL cleanup + secret deletion + bulk script fixes)
-**Clone Image**: wp-k8s-service-clone:final-fix-20260226-104040 (CORRECT - has HTTPS in entrypoint)
-**Current System State**: 
-- 10 active test clones (load-test-001 through load-test-010) created ~20 minutes ago
-- 4 warm pool pods ready (2/2 Running, 0 restarts)
-- 9 assigned pods (pool-type=assigned) running test clones
-- TTL cleaner running every 5 minutes (last run: 07:00 UTC)
-- All clones accessible via HTTPS subdomains
+
+### ⚠️ CRITICAL: Deployed Images Status
+**API Container (wp-k8s-service):**
+- Current: `wp-k8s-service:ttl-cleaner-fix-20260227-134158` ✅ CORRECT
+- Location: kubernetes/manifests/base/wp-k8s-service/deployment.yaml:23
+
+**Worker Container (dramatiq-worker):**
+- Current: `wp-k8s-service:warmpool-fix-20260227-093044` ⚠️ OUTDATED
+- Should be: `wp-k8s-service:ttl-cleaner-fix-20260227-134158`
+- Location: kubernetes/manifests/base/wp-k8s-service/deployment.yaml:107
+- **ACTION NEEDED**: Update worker image to match API container
+
+**Clone Pods Image:**
+- Current: `wp-k8s-service-clone:final-fix-20260226-104040` ✅ CORRECT
+- Location: kubernetes/manifests/base/wp-k8s-service/deployment.yaml:55
+
+**TTL Cleaner CronJob:**
+- Current: `wp-k8s-service:ttl-cleaner-fix-20260227-134158` ✅ CORRECT
+- Schedule: Every 5 minutes (*/5 * * * *)
+
+### Current System Configuration (VERIFIED FROM LIVE CLUSTER):
+**Dramatiq Workers:**
+- Configuration: `--processes 2 --threads 2`
+- **Total concurrent workers: 4** (NOT 8 as previously documented)
+- Memory: Request 1Gi, Limit 4Gi
+- CPU: Request 500m, Limit 2000m
+- Expected throughput: ~1.5-2 clones/minute
+
+**API Service (wp-k8s-service):**
+- Replicas: 1
+- Memory: Request 512Mi, Limit 2Gi
+- CPU: Request 250m, Limit 1000m
+- Port: 8000
+
+**Warm Pool:**
+- Current state: 2 pods ready (baseline capacity)
+- Scaling: Dynamic based on queue depth
+- Max burst: 20 pods (configurable)
+- Pod lifecycle: wordpress-warm-XXXXXXXX
+
+**Active Resources (Current Snapshot):**
+- Warm pool pods: 2 (ready for assignment)
+- Assigned pods: 0 (no active clones)
+- Clone services: 0
+- System status: Idle, ready for workload
 
 ### ✅ PERFORMANCE & RELIABILITY FIXES - 2026-02-26 23:40 SGT (15:40 UTC)
 
@@ -37,9 +74,12 @@
 ### Root Causes Identified:
 
 #### 1. Insufficient Worker Capacity
-- **Before**: 4 workers → ~1.3-2 clones/minute
-- **Attempted**: 16 workers → ~5-6 clones/minute BUT caused memory exhaustion
-- **Fixed**: 8 workers → ~3-4 clones/minute (stable)
+- **Initial**: 4 workers (2 processes × 2 threads) → ~1.3-2 clones/minute
+- **Attempted**: 16 workers (4 processes × 4 threads) → ~5-6 clones/minute BUT caused memory exhaustion
+- **Tried**: 8 workers (2 processes × 4 threads) → ~3-4 clones/minute (documented as stable)
+- **CURRENT (VERIFIED)**: 4 workers (2 processes × 2 threads) → ~1.5-2 clones/minute
+  - deployment.yaml line 109: `--processes 2 --threads 2`
+  - NOTE: Documentation was ahead of actual deployment
 
 #### 2. TTL Started at Submission (Not Processing)
 - Jobs submitted to queue with 30-minute TTL
@@ -61,10 +101,12 @@
 - Infrastructure pods (Traefik, warm pool, etc.)
 - Total: Cluster saturation at 29 nodes
 
-**The Fix:**
-- Reduced workers from 16 to 8 (halves memory to ~1.2GB)
-- Increased memory request from 1Gi to 2Gi (prevents evictions)
-- Configuration: 2 processes × 4 threads = 8 concurrent workers
+**The Fix (DOCUMENTED, NOT DEPLOYED):**
+- Plan was: Reduce workers from 16 to 8 (2 processes × 4 threads)
+- Plan was: Increase memory request from 1Gi to 2Gi
+- **ACTUAL CURRENT STATE**: Back to 4 workers (2 processes × 2 threads)
+- Memory: Still at 1Gi request / 4Gi limit
+- **CONCLUSION**: System was rolled back to 4 workers, never deployed with 8
 
 #### 4. Atomic Warm Pool Assignment (Race Condition)
 - **Before**: Multiple workers could claim the same warm pod
@@ -134,15 +176,15 @@ Changed all WordPress container health probes from `httpGet` to `tcpSocket` on p
 - ✅ Login cookies: Set with `secure` flag correctly
 - ✅ **NO REDIRECT LOOP** - wp-admin dashboard fully functional
 
-### Current System Configuration (2026-02-26 23:40 SGT)
+### Historical Configuration Note (2026-02-26 23:40 SGT)
 
-**wp-k8s-service Deployment:**
-- Image: `wp-k8s-service:ttl-fix-20260226-230812`
-- Workers: 8 concurrent (2 processes × 4 threads)
-- Memory: Request 2Gi, Limit 4Gi (prevents evictions)
-- CPU: Request 500m, Limit 2
+**Documented Configuration (NOT DEPLOYED):**
+- Documented image: `wp-k8s-service:ttl-fix-20260226-230812`
+- Documented workers: 8 concurrent (2 processes × 4 threads)
+- Documented memory: Request 2Gi, Limit 4Gi
 - Expected throughput: ~3-4 clones/minute
-- Location: `kubernetes/wp-k8s-service/`
+
+**ACTUAL DEPLOYED (SEE CURRENT SYSTEM CONFIGURATION ABOVE)**
 
 **Redis Queue:**
 - Persistence: AOF enabled (appendonly yes)
