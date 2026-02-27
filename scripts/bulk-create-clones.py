@@ -29,7 +29,7 @@ SOURCES = [
     },
 ]
 
-CLONE_COUNT = 30  # Testing with AWS 64 vCPU quota
+CLONE_COUNT = 10  # Reduced for demo - keeps pod count under control
 TTL_MINUTES = 30
 POLL_INTERVAL = 10  # Check job status every 10 seconds
 
@@ -79,7 +79,7 @@ def create_clone(clone_id: str, source_index: int) -> Dict:
 
 def poll_job_status(job_id: str) -> Dict:
     """Poll job status until completed or failed"""
-    url = f"{API_BASE}/api/v2/jobs/{job_id}"
+    url = f"{API_BASE}/api/v2/job-status/{job_id}"
     headers = {"Host": API_HOST_HEADER}
 
     try:

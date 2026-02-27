@@ -1,0 +1,131 @@
+{
+  "test_config": {
+    "clone_count": 10,
+    "ttl_minutes": 30,
+    "sources": [
+      "https://betaweb.ai",
+      "https://bonnel.ai"
+    ],
+    "timestamp": "2026-02-27T13:05:42.631001",
+    "submit_time_seconds": 12.81,
+    "total_time_seconds": 323.56
+  },
+  "results": [
+    {
+      "success": true,
+      "clone_id": "load-test-001",
+      "job_id": "14b4f851-4208-41f8-9f1a-82e5ce1dad3e",
+      "url": "https://load-test-001.clones.betaweb.ai",
+      "source_url": "https://betaweb.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:07.320107",
+      "elapsed_seconds": 1.05,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-002",
+      "job_id": "97d488a4-ff8b-4765-a45c-8916d2e4d87f",
+      "url": "https://load-test-002.clones.betaweb.ai",
+      "source_url": "https://bonnel.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:08.931729",
+      "elapsed_seconds": 1.41,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-003",
+      "job_id": "48e40185-aec8-4f42-aae7-426f20529b23",
+      "url": "https://load-test-003.clones.betaweb.ai",
+      "source_url": "https://betaweb.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:10.127461",
+      "elapsed_seconds": 0.99,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-004",
+      "job_id": "892c7fbd-3d49-48c1-acfc-2769ee3e8027",
+      "url": "https://load-test-004.clones.betaweb.ai",
+      "source_url": "https://bonnel.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:11.794715",
+      "elapsed_seconds": 1.47,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-005",
+      "job_id": "c6f88b3e-582f-4a31-a1ab-8fbc4d21ea1c",
+      "url": "https://load-test-005.clones.betaweb.ai",
+      "source_url": "https://betaweb.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:12.950428",
+      "elapsed_seconds": 0.95,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-006",
+      "job_id": "5653fcbf-9d29-4fd5-a1d7-cebdefdac57a",
+      "url": "https://load-test-006.clones.betaweb.ai",
+      "source_url": "https://bonnel.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:14.122727",
+      "elapsed_seconds": 0.97,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-007",
+      "job_id": "2fd77938-d0ac-457a-bff7-f4da03e926e2",
+      "url": "https://load-test-007.clones.betaweb.ai",
+      "source_url": "https://betaweb.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:15.241433",
+      "elapsed_seconds": 0.92,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-008",
+      "job_id": "020ba8e3-28cb-43c1-9efa-65208e5441ba",
+      "url": "https://load-test-008.clones.betaweb.ai",
+      "source_url": "https://bonnel.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:16.361924",
+      "elapsed_seconds": 0.92,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-009",
+      "job_id": "211b5bdf-e7e4-451c-b792-6282863892d7",
+      "url": "https://load-test-009.clones.betaweb.ai",
+      "source_url": "https://betaweb.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:17.612624",
+      "elapsed_seconds": 1.05,
+      "progress": 100
+    },
+    {
+      "success": true,
+      "clone_id": "load-test-010",
+      "job_id": "34611103-f792-4bce-bca5-4aa0e708c556",
+      "url": "https://load-test-010.clones.betaweb.ai",
+      "source_url": "https://bonnel.ai",
+      "status": "completed",
+      "submitted_at": "2026-02-27T13:00:18.870651",
+      "elapsed_seconds": 1.06,
+      "progress": 100
+    }
+  ],
+  "summary": {
+    "submitted": 10,
+    "completed": 10,
+    "failed": 0,
+    "success_rate": 100.0
+  }
+}
