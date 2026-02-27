@@ -56,8 +56,8 @@ class WarmPoolController:
     def _get_queue_depth(self) -> int:
         """Get the number of pending messages in the clone queue"""
         try:
-            # Dramatiq stores messages in Redis lists with key format: dramatiq:{queue_name}.msgs
-            queue_key = f"{self.queue_name}.msgs"
+            # Dramatiq stores messages in Redis lists with key format: dramatiq:{queue_name}
+            queue_key = f"dramatiq:{self.queue_name}"
             depth = self.redis_client.llen(queue_key)
             return depth
         except Exception as e:

@@ -14,21 +14,34 @@ from typing import List, Dict
 # Use public ALB endpoint (clones.betaweb.ai)
 API_BASE = "https://clones.betaweb.ai"
 API_HOST_HEADER = "clones.betaweb.ai"
-SOURCE_URL = "https://betaweb.ai"
-SOURCE_USERNAME = "Charles@toctoc.com.au"
-SOURCE_PASSWORD = "6(4b`Nde1i_D"
-CLONE_COUNT = 30
+
+# Source configurations - alternate between both sites
+SOURCES = [
+    {
+        "url": "https://betaweb.ai",
+        "username": "Charles@toctoc.com.au",
+        "password": "6(4b`Nde1i_D",
+    },
+    {
+        "url": "https://bonnel.ai",
+        "username": "charles@toctoc.com.au",
+        "password": "6(4b`Nde1i_D",
+    },
+]
+
+CLONE_COUNT = 30  # Testing with AWS 64 vCPU quota
 TTL_MINUTES = 30
 POLL_INTERVAL = 10  # Check job status every 10 seconds
 
 
-def create_clone(clone_id: str) -> Dict:
+def create_clone(clone_id: str, source_index: int) -> Dict:
     """Create a single WordPress clone using async v2 API"""
     url = f"{API_BASE}/api/v2/clone"
+    source = SOURCES[source_index % len(SOURCES)]
     payload = {
-        "source_url": SOURCE_URL,
-        "source_username": SOURCE_USERNAME,
-        "source_password": SOURCE_PASSWORD,
+        "source_url": source["url"],
+        "source_username": source["username"],
+        "source_password": source["password"],
         "customer_id": clone_id,
         "ttl_minutes": TTL_MINUTES,
     }
@@ -36,7 +49,7 @@ def create_clone(clone_id: str) -> Dict:
 
     start_time = time.time()
     try:
-        print(f"Submitting clone job {clone_id}...")
+        print(f"Submitting clone job {clone_id} from {source['url']}...")
         response = requests.post(url, json=payload, headers=headers, timeout=60)
         elapsed = time.time() - start_time
         response.raise_for_status()
@@ -50,6 +63,7 @@ def create_clone(clone_id: str) -> Dict:
             "clone_id": clone_id,
             "job_id": job_id,
             "url": clone_url,
+            "source_url": source["url"],
             "status": data.get("status", "pending"),
             "submitted_at": datetime.now().isoformat(),
             "elapsed_seconds": round(elapsed, 2),
@@ -153,13 +167,16 @@ def main():
     start = time.time()
     for i in range(1, CLONE_COUNT + 1):
         clone_id = f"load-test-{i:03d}"
-        result = create_clone(clone_id)
+        # Alternate between sources: even numbers use index 0 (betaweb), odd use index 1 (bonnel)
+        source_index = (i - 1) % 2
+        result = create_clone(clone_id, source_index)
         results.append(result)
 
         if result["success"]:
             job_ids.append(result["job_id"])
+            source_name = result.get("source_url", "").split("//")[1].split("/")[0]
             print(
-                f"  ✓ {clone_id} - Job: {result['job_id'][:8]}... - {result['elapsed_seconds']}s"
+                f"  ✓ {clone_id} ({source_name}) - Job: {result['job_id'][:8]}... - {result['elapsed_seconds']}s"
             )
         else:
             print(f"  ✗ {clone_id} - FAILED: {result['error']}")
@@ -285,7 +302,7 @@ def main():
                 "test_config": {
                     "clone_count": CLONE_COUNT,
                     "ttl_minutes": TTL_MINUTES,
-                    "source_url": SOURCE_URL,
+                    "sources": [s["url"] for s in SOURCES],
                     "timestamp": datetime.now().isoformat(),
                     "submit_time_seconds": submit_time,
                     "total_time_seconds": total_time,
