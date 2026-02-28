@@ -29,7 +29,7 @@ SOURCES = [
     },
 ]
 
-CLONE_COUNT = 10  # Reduced for demo - keeps pod count under control
+CLONE_COUNT = 50  # Full load test
 TTL_MINUTES = 30
 POLL_INTERVAL = 10  # Check job status every 10 seconds
 
