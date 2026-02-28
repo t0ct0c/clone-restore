@@ -58,7 +58,7 @@ async def setup_wordpress_with_browser(
             async with AsyncCamoufox(
                 headless=True,
                 humanize=True,  # Add human-like cursor movement and typing delays
-                geoip=True,  # Use real geolocation data (requires ~1.3GB font cache)
+                geoip=False,  # TESTING: Disabled to save ~1.3GB font cache per browser
                 os=["windows", "macos"],  # Randomly choose OS for fingerprint
                 locale="en-US",
             ) as browser:
@@ -640,7 +640,7 @@ async def create_application_password(
             async with AsyncCamoufox(
                 headless=True,
                 humanize=True,
-                geoip=True,
+                geoip=False,  # TESTING: Disabled to save ~1.3GB font cache per browser
                 os=["windows", "macos"],
                 locale="en-US",
             ) as browser:
