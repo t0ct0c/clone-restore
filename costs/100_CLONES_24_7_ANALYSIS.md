@@ -1,6 +1,17 @@
 # Cost Calculation: 100 WordPress Clones Running 24/7
 
-## Infrastructure Components
+## CURRENT CONFIGURATION
+
+**Your Karpenter Setup (kubernetes/bootstrap/terraform/karpenter.tf:174):**
+- **Instance Type:** Spot instances ONLY
+- **Currently Running:** 3 nodes (no clones deployed right now)
+- **Auto-scaling:** Karpenter manages node provisioning automatically
+- **Instance Categories:** c, m, r, t (compute, memory, general purpose)
+- **Cost Model:** ~70% cheaper than On-Demand
+
+---
+
+## Infrastructure Components (For 100 Clones)
 
 ### 1. EKS Cluster
 - **EKS Control Plane**: $0.10/hour
@@ -71,26 +82,7 @@ Using c5.4xlarge instances (16 vCPU, 32GB RAM):
 
 ---
 
-## Total Monthly Cost Summary
-
-### Scenario A: On-Demand Instances
-```
-Component              | Cost/Month
------------------------|------------
-EKS Control Plane      | $72.00
-EC2 (3× c5.4xlarge)    | $1,468.80
-Load Balancer (ALB)    | $20.00
-VPC/NAT Gateway        | $35.00
-EBS Storage (100GB)    | $8.00
-ECR                    | $0.50
-CloudWatch Logs        | $10.00
------------------------|------------
-TOTAL                  | $1,614.30/month
-```
-
-**Per clone**: $1,614.30 / 100 = **$16.14/clone/month**
-
-### Scenario B: Spot Instances (70% discount)
+## Total Monthly Cost (YOUR CONFIGURATION = SPOT INSTANCES)
 ```
 Component              | Cost/Month
 -----------------------|------------
@@ -106,6 +98,27 @@ TOTAL                  | $586.14/month
 ```
 
 **Per clone**: $586.14 / 100 = **$5.86/clone/month**
+
+---
+
+## Alternative: If You Switched to On-Demand (NOT RECOMMENDED)
+
+```
+Component              | Cost/Month
+-----------------------|------------
+EKS Control Plane      | $72.00
+EC2 (3× c5.4xlarge)    | $1,468.80
+Load Balancer (ALB)    | $20.00
+VPC/NAT Gateway        | $35.00
+EBS Storage (100GB)    | $8.00
+ECR                    | $0.50
+CloudWatch Logs        | $10.00
+-----------------------|------------
+TOTAL                  | $1,614.30/month
+```
+
+**Per clone**: $1,614.30 / 100 = **$16.14/clone/month**
+**Cost difference vs Spot**: +$1,028/month (64% more expensive)
 
 ---
 
@@ -133,34 +146,32 @@ TOTAL                  | $586.14/month
 - VPS: $20-100/site/month
 - Managed WordPress: $30-200/site/month
 
-**Our Solution:**
-- On-Demand: $16.14/site/month (competitive)
-- Spot: $5.86/site/month (70% cheaper than shared hosting!)
+**Your Setup (Spot):** $5.86/site/month
+- **70% cheaper** than cheapest shared hosting ($10/month)
+- **83% cheaper** than typical managed WordPress ($30/month)
 
 ---
 
 ## Key Takeaways
 
-1. **Spot instances reduce costs by 64%** ($1,614 → $586/month)
-2. **geoip=False saves ~$150-490/month** (1 fewer instance needed)
-3. **Scale economics**: Cost per clone decreases with more clones
-4. **24/7 operation is expensive**: TTL-based cleanup recommended for non-permanent clones
-5. **Break-even**: Need ~35-40 traditional hosted sites to justify infrastructure costs
+1. ✅ **You're already using Spot** - saving 64% vs On-Demand ($1,028/month savings)
+2. ✅ **geoip=False is enabled** - saves 1 instance ($150-490/month)
+3. **24/7 operation costs $586/month** for 100 clones
+4. **Per-clone cost: $5.86/month** - 70% cheaper than shared hosting
 
-## Recommendations
+## Next Steps to Reduce Costs
 
-1. ✅ **Use Spot instances** for production (70% cost savings)
-2. ✅ **Enable geoip=False** (saves 1 instance = $150-490/month)
-3. ✅ **Implement TTL cleanup** (don't run clones 24/7 unless needed)
-4. ✅ **Use reserved instances** for predictable workloads (30-40% discount)
-5. ✅ **Optimize warm pool size** (don't maintain 20 warm pods constantly)
+1. ✅ **Already done:** Spot instances enabled
+2. ✅ **Already done:** geoip=False enabled
+3. 🔲 **Implement TTL cleanup** - don't run clones 24/7 unless needed
+4. 🔲 **Optimize warm pool size** - only keep what you need ready
 
-## Realistic Usage Pattern
+## If You Use It Less (Development/Testing Pattern)
 
-**Scenario C: Development/Testing (8 hours/day, 5 days/week)**
-- Usage: ~40 hours/week = 173 hours/month
-- Utilization: 173 / 720 = 24% of month
+**Development/Testing (8 hours/day, 5 days/week):**
+- Usage: ~40 hours/week = 173 hours/month  
+- Utilization: 24% of full-time
 - **Cost**: $586 × 0.24 = **$140.64/month**
 - **Per clone**: $1.41/clone/month
 
-This is the most realistic scenario for a development/testing environment!
+If you only run clones during work hours, your cost drops to **$141/month** instead of $586/month!
