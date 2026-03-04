@@ -202,9 +202,7 @@ async def clone_wordpress(job_id: str) -> Dict:
 async def restore_wordpress(job_id: str) -> Dict:
     """Restore WordPress site asynchronously."""
     from .browser_setup import setup_wordpress_with_browser
-    from .main import (
-        perform_clone,
-    )  # Reuse perform_clone for now, will extract perform_restore later
+    from .main import perform_restore
     from .job_store import get_job_store, JobStatus
     import requests
 
@@ -309,16 +307,19 @@ async def restore_wordpress(job_id: str) -> Dict:
 
         await job_store.update_job_status(job_id, JobStatus.running, progress=50)
 
-        # Step 3: Perform restore (reusing clone logic for now)
+        # Step 3: Perform restore with preservation options
         logger.info(f"Restoring from {source_url} to {target_url}")
+        logger.info(
+            f"Preservation: plugins={preserve_plugins}, themes={preserve_themes}"
+        )
 
-        # Use perform_clone for now (preserve options not yet implemented)
-        # TODO: Extract perform_restore function that handles preserve_plugins/preserve_themes
-        restore_result = perform_clone(
+        restore_result = perform_restore(
             source_url,
             source_api_key,
             target_url,
             target_api_key,
+            preserve_plugins=preserve_plugins,
+            preserve_themes=preserve_themes,
         )
 
         if not restore_result.get("success"):
