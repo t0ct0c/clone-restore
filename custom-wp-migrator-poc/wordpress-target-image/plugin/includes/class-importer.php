@@ -144,22 +144,15 @@ class Custom_Migrator_Importer {
     private function import_database($db_file, $target_url_override = null) {
         global $wpdb;
         
+        // Disable PHP execution time limit for large imports
+        set_time_limit(0);
+        
         if (!file_exists($db_file)) {
             throw new Exception('Database file not found in archive');
         }
         
-        $sql = file_get_contents($db_file);
-        
-        if (empty($sql)) {
-            throw new Exception('Database file is empty');
-        }
-        
-        // MySQL: Drop and recreate tables
-        $this->log('Dropping existing tables...');
-        $this->drop_all_tables();
-        
-        // Detect table prefix from SQL dump (CRITICAL for site detection)
-        $detected_prefix = $this->detect_prefix_from_sql($sql);
+        // Detect table prefix from SQL file (without loading entire file)
+        $detected_prefix = $this->detect_prefix_from_sql_file($db_file);
         if ($detected_prefix) {
             $this->log("Detected table prefix from source: $detected_prefix");
             $this->update_wp_config_prefix($detected_prefix);
@@ -168,15 +161,67 @@ class Custom_Migrator_Importer {
             $wpdb->set_prefix($detected_prefix);
         }
 
-        // Extract old URL before importing (for wp search-replace later)
-        $old_url = $this->extract_url_from_sql($sql, $detected_prefix ? $detected_prefix : 'wp_');
+        // Extract old URL before importing (without loading entire file)
+        $old_url = $this->extract_url_from_sql_file($db_file, $detected_prefix ? $detected_prefix : 'wp_');
         if ($old_url) {
             $this->log("Extracted source URL from database: $old_url");
         }
         
-        // Import the SQL directly
-        $this->log('Executing SQL import...');
-        $this->execute_sql($sql);
+        // Reset database to clean slate using WP-CLI
+        $this->log('Resetting database...');
+        $reset_cmd = "wp db reset --yes --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1";
+        exec($reset_cmd, $reset_output, $reset_return);
+        
+        $this->log("Database reset command: $reset_cmd");
+        $this->log("Reset exit code: $reset_return");
+        $this->log("Reset output: " . implode("\n", $reset_output));
+        
+        if ($reset_return !== 0) {
+            $this->log("Database reset warning: " . implode("\n", $reset_output));
+        }
+        
+        // Import SQL using WP-CLI (memory-efficient, handles large files)
+        $this->log('Executing SQL import via WP-CLI...');
+        $this->log("Database file path: $db_file");
+        $this->log("Database file exists: " . (file_exists($db_file) ? 'YES' : 'NO'));
+        $this->log("Database file size: " . (file_exists($db_file) ? filesize($db_file) : 'N/A') . " bytes");
+        $this->log("Database file readable: " . (is_readable($db_file) ? 'YES' : 'NO'));
+        
+        $import_cmd = "wp db import " . escapeshellarg($db_file) . " --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1";
+        $this->log("Import command: $import_cmd");
+        
+        exec($import_cmd, $import_output, $import_return);
+        
+        $this->log("Import exit code: $import_return");
+        $this->log("Import output: " . implode("\n", $import_output));
+        
+        if ($import_return !== 0) {
+            $error_msg = "Database import failed (exit code $import_return): " . implode("\n", $import_output);
+            $this->log($error_msg);
+            throw new Exception($error_msg);
+        }
+        
+        $this->log("Database import completed successfully via WP-CLI");
+        
+        // Verify import worked by checking if tables exist
+        $tables_check = "wp db tables --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1";
+        exec($tables_check, $tables_output, $tables_return);
+        $this->log("Tables after import: " . implode("\n", $tables_output));
+        
+        // Post-import prefix verification: detect actual prefix from imported tables
+        // This catches cases where SQL file parsing failed (e.g., plugin tables appear first)
+        $db_detected_prefix = $this->detect_prefix_from_database();
+        if ($db_detected_prefix && $db_detected_prefix !== $wpdb->prefix) {
+            $this->log("Prefix mismatch detected! wp-config has '{$wpdb->prefix}' but database has '{$db_detected_prefix}'");
+            $this->log("Correcting wp-config.php to use detected prefix: $db_detected_prefix");
+            $this->update_wp_config_prefix($db_detected_prefix);
+            // Reload wpdb with correct prefix
+            $wpdb->prefix = $db_detected_prefix;
+            $wpdb->set_prefix($db_detected_prefix);
+            $this->log("WordPress database object updated to use prefix: $db_detected_prefix");
+        } elseif ($db_detected_prefix) {
+            $this->log("Prefix verification: wp-config and database both use '$db_detected_prefix' (OK)");
+        }
         
         // Use WP-CLI for search-replace if available (handles serialization)
         // Use override if provided, otherwise fallback to internal site URL
@@ -207,26 +252,6 @@ class Custom_Migrator_Importer {
         if (is_dir(WP_PLUGIN_DIR . '/elementor')) {
             $this->log('Regenerating Elementor CSS...');
             exec("wp elementor flush-css --path=" . escapeshellarg(ABSPATH) . " --allow-root 2>&1");
-        }
-    }
-
-    private function execute_sql($sql) {
-        global $wpdb;
-        
-        // Split into individual queries
-        $queries = array_filter(
-            array_map('trim', explode(";\n", $sql)),
-            function($query) {
-                return !empty($query) && strpos($query, '--') !== 0;
-            }
-        );
-        
-        // Execute queries
-        foreach ($queries as $query) {
-            $result = $wpdb->query($query);
-            if ($result === false && !empty($wpdb->last_error)) {
-                $this->log('Query warning: ' . $wpdb->last_error);
-            }
         }
     }
 
@@ -378,6 +403,108 @@ class Custom_Migrator_Importer {
         if (preg_match("/INSERT INTO [^`]*`$table_name`[^;]*'siteurl'[^']*'([^']+)'/", $sql, $matches)) {
             return $matches[1];
         }
+        return null;
+    }
+    
+    private function extract_url_from_sql_file($db_file, $prefix = 'wp_') {
+        // Extract siteurl from SQL file without loading entire file into memory
+        // wp_options is typically in first 1000 lines, so we only read that much
+        $table_name = $prefix . 'options';
+        $pattern = "/INSERT INTO [^`]*`$table_name`[^;]*'siteurl'[^']*'([^']+)'/";
+        
+        $handle = @fopen($db_file, 'r');
+        if (!$handle) {
+            return null;
+        }
+        
+        $line_count = 0;
+        $buffer = '';
+        while (($line = fgets($handle)) !== false && $line_count < 1000) {
+            $buffer .= $line;
+            // Check buffer periodically (every 10 lines) to avoid too many regex calls
+            if ($line_count % 10 === 0 && preg_match($pattern, $buffer, $matches)) {
+                fclose($handle);
+                return $matches[1];
+            }
+            $line_count++;
+        }
+        
+        // Final check on remaining buffer
+        if (preg_match($pattern, $buffer, $matches)) {
+            fclose($handle);
+            return $matches[1];
+        }
+        
+        fclose($handle);
+        return null;
+    }
+    
+    private function detect_prefix_from_sql_file($db_file) {
+        // Detect table prefix from SQL file without loading entire file
+        // Look for CREATE TABLE or INSERT INTO in first 2000 lines
+        // Expanded to handle cases where plugin tables appear before core tables
+        $handle = @fopen($db_file, 'r');
+        if (!$handle) {
+            return null;
+        }
+        
+        $line_count = 0;
+        $buffer = '';
+        // Check for multiple core WordPress tables (options, users, posts, etc.)
+        $core_tables = '(options|users|posts|comments|usermeta|postmeta|terms|commentmeta)';
+        
+        while (($line = fgets($handle)) !== false && $line_count < 2000) {
+            $buffer .= $line;
+            // Match any core WordPress table
+            if (preg_match("/(?:CREATE TABLE|INSERT INTO)\s+`([^`]+)$core_tables`/", $buffer, $matches)) {
+                $prefix = $matches[1];
+                $table = $matches[2];
+                fclose($handle);
+                $this->log("Detected prefix '$prefix' from table '$table' in SQL file");
+                return $prefix;
+            }
+            $line_count++;
+        }
+        
+        fclose($handle);
+        $this->log("Could not detect prefix from first 2000 lines of SQL file");
+        return null;
+    }
+    
+    private function detect_prefix_from_database() {
+        // Detect table prefix by querying the database directly
+        // This is a failsafe for when SQL file parsing fails
+        global $wpdb;
+        
+        // Try to find options table (most reliable)
+        $tables = $wpdb->get_results("SHOW TABLES LIKE '%_options'", ARRAY_N);
+        if (!empty($tables)) {
+            $table_name = $tables[0][0];
+            // Extract prefix by removing '_options'
+            $prefix = substr($table_name, 0, -7); // Remove last 7 chars ('options')
+            $this->log("Detected prefix '$prefix' from database table '$table_name'");
+            return $prefix;
+        }
+        
+        // Fallback: try users table
+        $tables = $wpdb->get_results("SHOW TABLES LIKE '%_users'", ARRAY_N);
+        if (!empty($tables)) {
+            $table_name = $tables[0][0];
+            $prefix = substr($table_name, 0, -5); // Remove '_users'
+            $this->log("Detected prefix '$prefix' from database table '$table_name'");
+            return $prefix;
+        }
+        
+        // Fallback: try posts table
+        $tables = $wpdb->get_results("SHOW TABLES LIKE '%_posts'", ARRAY_N);
+        if (!empty($tables)) {
+            $table_name = $tables[0][0];
+            $prefix = substr($table_name, 0, -5); // Remove '_posts'
+            $this->log("Detected prefix '$prefix' from database table '$table_name'");
+            return $prefix;
+        }
+        
+        $this->log("Could not detect prefix from database - no core WordPress tables found");
         return null;
     }
     

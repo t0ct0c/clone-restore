@@ -124,10 +124,10 @@ flowchart TD
 curl -X POST https://clones.betaweb.ai/api/v2/clone \
   -H "Content-Type: application/json" \
   -d '{
-    "source_url": "https://betaweb.ai",
-    "source_username": "Charles@toctoc.com.au",
+    "source_url": "https://example.com",
+    "source_username": "your-username",
     "source_password": "your-password",
-    "customer_id": "my-clone-123",
+    "customer_id": "my-clone-001",
     "ttl_minutes": 60
   }'
 ```
@@ -139,21 +139,21 @@ curl -X POST https://clones.betaweb.ai/api/v2/clone \
   "type": "clone",
   "status": "pending",
   "progress": 0,
-  "created_at": "2026-02-26T06:47:54.247391",
-  "ttl_expires_at": "2026-02-26T07:47:54.247395"
+  "created_at": "2026-03-04T12:00:00.000000",
+  "ttl_expires_at": "2026-03-04T13:00:00.000000"
 }
 ```
 
-**Important:** Save the `job_id` - you'll need it to check status and get credentials!
+**⚠️ Important:** Save the `job_id` - you'll need it to check status!
 
-### 2. Check Clone Status and Get Credentials
+### 2. Check Clone Status
 
 ```bash
 # Replace abc-123-xyz with your job_id from step 1
 curl https://clones.betaweb.ai/api/v2/jobs/abc-123-xyz
 ```
 
-Keep polling every 5-10 seconds until `status: "completed"` (~60-80 seconds)
+Poll every 5-10 seconds until `status: "completed"` (~60-120 seconds depending on site size)
 
 **Response when complete:**
 ```json
@@ -163,26 +163,49 @@ Keep polling every 5-10 seconds until `status: "completed"` (~60-80 seconds)
   "status": "completed",
   "progress": 100,
   "result": {
-    "public_url": "https://my-clone-123.clones.betaweb.ai",
-    "internal_url": "http://my-clone-123.wordpress-staging.svc.cluster.local"
-  }
+    "public_url": "https://my-clone-001.clones.betaweb.ai",
+    "internal_url": "http://my-clone-001.wordpress-staging.svc.cluster.local"
+  },
+  "error": null,
+  "completed_at": "2026-03-04T12:02:15.123456"
 }
 ```
 
 ### 3. Get Clone Credentials
 
-The clone credentials are stored in a Kubernetes secret. You need to retrieve them:
+⚠️ **Clone credentials are NOT in the API response!** You must retrieve them from Kubernetes:
 
 ```bash
-# Get the password from the Kubernetes secret
-kubectl get secret my-clone-123-credentials -n wordpress-staging \
+# Get username (always 'admin')
+echo "admin"
+
+# Get password from Kubernetes secret
+kubectl get secret my-clone-001-credentials -n wordpress-staging \
   -o jsonpath='{.data.wordpress-password}' | base64 -d && echo
 ```
 
-**Clone credentials:**
-- **URL:** `https://my-clone-123.clones.betaweb.ai/wp-admin`
-- **Username:** `admin` (always)
-- **Password:** (from command above)
+**Example output:**
+```
+admin
+Abc123XyZ789RandomPassword
+```
+
+**Your clone credentials:**
+- **URL:** `https://my-clone-001.clones.betaweb.ai/wp-admin`
+- **Username:** `admin`
+- **Password:** `Abc123XyZ789RandomPassword` (from command above)
+
+**Quick credential retrieval script:**
+```bash
+#!/bin/bash
+CLONE_ID="my-clone-001"
+echo "Clone URL: https://${CLONE_ID}.clones.betaweb.ai/wp-admin"
+echo "Username: admin"
+echo -n "Password: "
+kubectl get secret ${CLONE_ID}-credentials -n wordpress-staging \
+  -o jsonpath='{.data.wordpress-password}' | base64 -d
+echo
+```
 
 ### 4. Make Changes to the Clone
 
