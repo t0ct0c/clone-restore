@@ -14,5 +14,8 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # Copy custom migrator plugin
 COPY custom-migrator.zip /plugin.zip
 
+# Copy custom PHP configuration for increased upload limits
+COPY uploads.ini /usr/local/etc/php/conf.d/uploads.ini
+
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["apache2-foreground"]

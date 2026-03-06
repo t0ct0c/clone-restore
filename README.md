@@ -116,16 +116,18 @@ flowchart TD
     class WarmPod1,WarmPod2,PoolReplenish,ClonePods poolClass
 ```
 
-## Quick Start
+## API Endpoints
 
-### 1. Create a Clone
+### 1. Clone WordPress Site
+
+Create a temporary clone of any WordPress site.
 
 ```bash
 curl -X POST https://clones.betaweb.ai/api/v2/clone \
   -H "Content-Type: application/json" \
   -d '{
     "source_url": "https://example.com",
-    "source_username": "your-username",
+    "source_username": "admin",
     "source_password": "your-password",
     "customer_id": "my-clone-001",
     "ttl_minutes": 60
@@ -136,223 +138,272 @@ curl -X POST https://clones.betaweb.ai/api/v2/clone \
 ```json
 {
   "job_id": "abc-123-xyz",
-  "type": "clone",
-  "status": "pending",
-  "progress": 0,
-  "created_at": "2026-03-04T12:00:00.000000",
-  "ttl_expires_at": "2026-03-04T13:00:00.000000"
-}
-```
-
-**⚠️ Important:** Save the `job_id` - you'll need it to check status!
-
-### 2. Check Clone Status
-
-```bash
-# Replace abc-123-xyz with your job_id from step 1
-curl https://clones.betaweb.ai/api/v2/jobs/abc-123-xyz
-```
-
-Poll every 5-10 seconds until `status: "completed"` (~60-120 seconds depending on site size)
-
-**Response when complete:**
-```json
-{
-  "job_id": "abc-123-xyz",
-  "type": "clone",
-  "status": "completed",
-  "progress": 100,
-  "result": {
-    "public_url": "https://my-clone-001.clones.betaweb.ai",
-    "internal_url": "http://my-clone-001.wordpress-staging.svc.cluster.local"
-  },
-  "error": null,
-  "completed_at": "2026-03-04T12:02:15.123456"
-}
-```
-
-### 3. Get Clone Credentials
-
-⚠️ **Clone credentials are NOT in the API response!** You must retrieve them from Kubernetes:
-
-```bash
-# Get username (always 'admin')
-echo "admin"
-
-# Get password from Kubernetes secret
-kubectl get secret my-clone-001-credentials -n wordpress-staging \
-  -o jsonpath='{.data.wordpress-password}' | base64 -d && echo
-```
-
-**Example output:**
-```
-admin
-Abc123XyZ789RandomPassword
-```
-
-**Your clone credentials:**
-- **URL:** `https://my-clone-001.clones.betaweb.ai/wp-admin`
-- **Username:** `admin`
-- **Password:** `Abc123XyZ789RandomPassword` (from command above)
-
-**Quick credential retrieval script:**
-```bash
-#!/bin/bash
-CLONE_ID="my-clone-001"
-echo "Clone URL: https://${CLONE_ID}.clones.betaweb.ai/wp-admin"
-echo "Username: admin"
-echo -n "Password: "
-kubectl get secret ${CLONE_ID}-credentials -n wordpress-staging \
-  -o jsonpath='{.data.wordpress-password}' | base64 -d
-echo
-```
-
-### 4. Make Changes to the Clone
-
-1. Open `https://my-clone-123.clones.betaweb.ai/wp-admin` in your browser
-2. Login with username `admin` and the password from step 3
-3. Make your changes (edit pages, posts, settings, etc.)
-4. Save your changes
-
-### 5. Restore Clone to Production
-
-Once you've made changes and are ready to push them to production:
-
-```bash
-curl -X POST https://clones.betaweb.ai/api/v2/restore \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_url": "https://my-clone-123.clones.betaweb.ai",
-    "source_username": "admin",
-    "source_password": "password-from-step-3",
-    "target_url": "https://betaweb.ai",
-    "target_username": "Charles@toctoc.com.au",
-    "target_password": "your-production-password",
-    "customer_id": "restore-from-clone-123"
-  }'
-```
-
-**Note:** Remove trailing slashes from URLs
-
-**Response:**
-```json
-{
-  "job_id": "def-456-xyz",
-  "type": "restore",
   "status": "pending",
   "progress": 0
 }
 ```
 
-**Important:** Save the restore `job_id` to monitor progress!
-
-### 6. Monitor Restore Progress
-
+**Check status:**
 ```bash
-# Replace def-456-xyz with your restore job_id from step 5
-curl https://clones.betaweb.ai/api/v2/jobs/def-456-xyz
+curl https://clones.betaweb.ai/api/v2/job-status/abc-123-xyz
 ```
 
-Keep polling until `status: "completed"` (~60-90 seconds)
-
-**Progress indicators:**
-- `10%` - Job received and queued
-- `30%` - Source setup complete
-- `50%` - Target setup complete
-- `70%` - Export from clone complete
-- `100%` - Import to production complete
-
-**Done!** Your changes are now live on `https://betaweb.ai`
-
-## Timing
-
-- **Clone creation:** 60-80 seconds (warm pool) / 80-120 seconds (cold provision)
-- **Restore:** 60-90 seconds
-- **Poll interval:** Every 5-10 seconds
-- **Clone TTL:** Configurable (default 60 minutes, auto-deleted after expiry)
-
-## Important Notes
-
-### Clone Credentials
-- Clone credentials are **NOT** returned in the API response
-- You must retrieve the password from the Kubernetes secret using `kubectl`
-- Username is always `admin`
-- Credentials are stored in a secret named `{customer_id}-credentials`
-
-### Job IDs
-- **Save your job_id** from the clone/restore response
-- You need it to check status: `GET /api/v2/jobs/{job_id}`
-- Job IDs are UUIDs (e.g., `abc-123-xyz`)
-
-### URLs
-- Remove trailing slashes from URLs in API requests
-- Clone URLs: `https://{customer_id}.clones.betaweb.ai`
-- Internal URLs: `http://{customer_id}.wordpress-staging.svc.cluster.local`
-
-### TTL and Auto-Cleanup
-- Clones auto-delete after TTL expires (default 60 minutes)
-- TTL cleaner runs every 5 minutes
-- Extend TTL by setting `ttl_minutes` parameter when creating clone
-
-## API Reference
-
-All endpoints return JSON with a `job_id` for async operations.
-
-### POST /api/v2/clone
-Create a WordPress clone (non-blocking)
-
-**Request Body:**
+**When completed (status: "completed"):**
 ```json
 {
-  "source_url": "https://betaweb.ai",
-  "source_username": "username",
-  "source_password": "password",
-  "customer_id": "unique-clone-id",
-  "ttl_minutes": 60
+  "status": "completed",
+  "progress": 100,
+  "result": {
+    "public_url": "https://my-clone-001.clones.betaweb.ai",
+    "wordpress_username": "admin",
+    "wordpress_password": "ABC123xyz..."
+  }
 }
 ```
 
-**Response:** Returns immediately with `job_id`
+**Access your clone:**
+- URL: `https://my-clone-001.clones.betaweb.ai/wp-admin`
+- Username: `admin` (from response)
+- Password: `ABC123xyz...` (from response)
 
-### POST /api/v2/restore
-Restore a clone to production (non-blocking)
+---
 
-**Request Body:**
+### 2. Restore Changes to Production
+
+Push changes from a clone back to your production site.
+
+```bash
+curl -X POST https://clones.betaweb.ai/api/v2/restore \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "https://my-clone-001.clones.betaweb.ai",
+    "source_username": "admin",
+    "source_password": "ABC123xyz...",
+    "target_url": "https://example.com",
+    "target_username": "admin",
+    "target_password": "production-password",
+    "customer_id": "restore-001"
+  }'
+```
+
+**Response:**
+```json
+{
+  "job_id": "def-456-xyz",
+  "status": "pending"
+}
+```
+
+**Check status:**
+```bash
+curl https://clones.betaweb.ai/api/v2/job-status/def-456-xyz
+```
+
+Poll every 5-10 seconds until `status: "completed"`
+
+---
+
+### 3. Create Application Password
+
+Generate a WordPress Application Password for REST API access (no manual login required).
+
+```bash
+curl -X POST https://clones.betaweb.ai/create-app-password \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://example.com",
+    "username": "admin",
+    "password": "your-password",
+    "app_name": "My API Access"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "application_password": "AbCd EfGh IjKl MnOp QrSt UvWx",
+  "app_name": "My API Access",
+  "message": "Application password created successfully"
+}
+```
+
+**Use the application password:**
+```bash
+# Example: List WordPress posts using the application password
+curl https://example.com/wp-json/wp/v2/posts \
+  --user "admin:AbCd EfGh IjKl MnOp QrSt UvWx"
+```
+
+**Requirements:**
+- WordPress 5.6 or higher
+- HTTPS enabled (or local development environment)
+- User must have admin privileges
+
+---
+
+## Quick Examples
+
+### Clone → Edit → Restore Workflow
+
+```bash
+# 1. Create clone
+CLONE_JOB=$(curl -s -X POST https://clones.betaweb.ai/api/v2/clone \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_url": "https://mysite.com",
+    "source_username": "admin",
+    "source_password": "password123",
+    "customer_id": "edit-homepage",
+    "ttl_minutes": 120
+  }' | jq -r '.job_id')
+
+echo "Clone job: $CLONE_JOB"
+
+# 2. Wait for completion (2-3 minutes)
+while true; do
+  STATUS=$(curl -s https://clones.betaweb.ai/api/v2/job-status/$CLONE_JOB | jq -r '.status')
+  echo "Status: $STATUS"
+  [ "$STATUS" = "completed" ] && break
+  sleep 10
+done
+
+# 3. Get credentials
+CLONE_INFO=$(curl -s https://clones.betaweb.ai/api/v2/job-status/$CLONE_JOB)
+CLONE_URL=$(echo $CLONE_INFO | jq -r '.result.public_url')
+CLONE_PASS=$(echo $CLONE_INFO | jq -r '.result.wordpress_password')
+
+echo "Clone URL: $CLONE_URL/wp-admin"
+echo "Username: admin"
+echo "Password: $CLONE_PASS"
+
+# 4. Make your edits at $CLONE_URL/wp-admin
+# (Open in browser, edit content, save changes)
+
+# 5. Restore to production
+RESTORE_JOB=$(curl -s -X POST https://clones.betaweb.ai/api/v2/restore \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"source_url\": \"$CLONE_URL\",
+    \"source_username\": \"admin\",
+    \"source_password\": \"$CLONE_PASS\",
+    \"target_url\": \"https://mysite.com\",
+    \"target_username\": \"admin\",
+    \"target_password\": \"password123\",
+    \"customer_id\": \"restore-homepage\"
+  }" | jq -r '.job_id')
+
+echo "Restore job: $RESTORE_JOB"
+
+# 6. Monitor restore
+while true; do
+  STATUS=$(curl -s https://clones.betaweb.ai/api/v2/job-status/$RESTORE_JOB | jq -r '.status')
+  echo "Restore status: $STATUS"
+  [ "$STATUS" = "completed" ] && break
+  sleep 10
+done
+
+echo "Done! Changes are live on mysite.com"
+```
+
+---
+
+## Important Notes
+
+### Timing
+- **Clone creation:** 60-120 seconds (depending on site size)
+- **Restore:** 60-90 seconds
+- **Create app password:** 15-30 seconds
+- **Poll interval:** Check status every 5-10 seconds
+
+### Clone Behavior
+- **TTL:** Clones auto-delete after expiration (default: 60 minutes)
+- **Credentials:** Username is always `admin`, password returned in job result
+- **URL format:** `https://{customer_id}.clones.betaweb.ai`
+- **Upload limits:** 128MB max file size (themes, plugins, media)
+
+### Job Status Endpoint
+- **Correct endpoint:** `/api/v2/job-status/{job_id}` ✅
+- **Old endpoint:** `/api/v2/jobs/{job_id}` ❌ (404 error)
+- Save your `job_id` from the initial response to check status
+
+### Application Passwords
+- Requires WordPress 5.6+ and HTTPS (or local environment)
+- Use for REST API authentication without exposing main password
+- Format: 24 characters split into 6 groups (e.g., "AbCd EfGh IjKl MnOp QrSt UvWx")
+- Use with Basic Auth: `username:application_password`
+
+## API Reference
+
+### Endpoints Summary
+
+| Endpoint | Method | Purpose | Returns |
+|----------|--------|---------|---------|
+| `/api/v2/clone` | POST | Create WordPress clone | `job_id` (async) |
+| `/api/v2/restore` | POST | Restore clone to production | `job_id` (async) |
+| `/api/v2/job-status/{job_id}` | GET | Check job progress | Status & credentials |
+| `/create-app-password` | POST | Generate WordPress app password | Password (sync) |
+
+### Request/Response Details
+
+#### POST /api/v2/clone
+```json
+{
+  "source_url": "https://example.com",
+  "source_username": "admin",
+  "source_password": "password",
+  "customer_id": "unique-id",
+  "ttl_minutes": 60
+}
+```
+**Returns:** `{ "job_id": "...", "status": "pending" }`
+
+#### POST /api/v2/restore
 ```json
 {
   "source_url": "https://clone-id.clones.betaweb.ai",
   "source_username": "admin",
   "source_password": "clone-password",
-  "target_url": "https://production-site.com",
-  "target_username": "target-username",
-  "target_password": "target-password",
-  "customer_id": "restore-job-id"
+  "target_url": "https://production.com",
+  "target_username": "admin",
+  "target_password": "prod-password",
+  "customer_id": "restore-id"
 }
 ```
+**Returns:** `{ "job_id": "...", "status": "pending" }`
 
-**Response:** Returns immediately with `job_id`
-
-### GET /api/v2/jobs/{job_id}
-Check status of any job (clone or restore)
-
-**Response:**
+#### GET /api/v2/job-status/{job_id}
+**Returns:**
 ```json
 {
-  "job_id": "abc-123-xyz",
-  "type": "clone",
   "status": "completed",
   "progress": 100,
   "result": {
-    "public_url": "https://clone-id.clones.betaweb.ai"
-  },
-  "error": null,
-  "created_at": "2026-02-26T06:47:54.247391",
-  "completed_at": "2026-02-26T06:49:00.123456",
-  "ttl_expires_at": "2026-02-26T07:47:54.247395"
+    "public_url": "https://clone-id.clones.betaweb.ai",
+    "wordpress_username": "admin",
+    "wordpress_password": "ABC123..."
+  }
 }
 ```
+**Status values:** `pending` → `running` → `completed` or `failed`
 
-**Status values:** `pending`, `running`, `completed`, `failed`
+#### POST /create-app-password
+```json
+{
+  "url": "https://example.com",
+  "username": "admin",
+  "password": "password",
+  "app_name": "My App"
+}
+```
+**Returns:**
+```json
+{
+  "success": true,
+  "application_password": "AbCd EfGh IjKl MnOp QrSt UvWx",
+  "app_name": "My App"
+}
+```
 
 ## Additional Documentation
 

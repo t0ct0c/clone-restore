@@ -1,12 +1,12 @@
 # Operational Memory Document - WordPress Clone/Restore System
 
-**Last Updated**: 2026-03-04 12:30 UTC
+**Last Updated**: 2026-03-04 15:57 UTC
 
-## CURRENT BRANCH: test/geoip-false-only
-**Status**: ✅ PRODUCTION READY - Large site imports fixed with table prefix detection
+## CURRENT BRANCH: feat/kubernetes
+**Status**: ✅ PRODUCTION READY - Large site imports + PHP upload limits fixed
 **System**: Kubernetes-based WordPress Clone/Restore (EKS + Traefik + Warm Pool + Local MySQL)
-**Last Deployed**: wp-k8s-service:prefix-fix-20260304-122331
-**Clone Image**: wp-k8s-service-clone:prefix-fix-20260304-122238 ✅ (includes WP-CLI import + prefix detection)
+**Last Deployed**: wp-k8s-service:php-upload-fix-20260304-155723
+**Clone Image**: wp-k8s-service-clone:php-upload-fix-20260304-155723 ✅ (WP-CLI import + prefix detection + 128M uploads)
 **Current System State**: 
 - wp-k8s-service running with 1 replica
 - Dramatiq workers: 2 processes × 2 threads (4 workers)
@@ -276,6 +276,61 @@ if ($db_detected_prefix && $db_detected_prefix !== $wpdb->prefix) {
 - **Rollout:** 2026-03-04 12:23 UTC
 - **Status:** Successfully rolled out
 - **Warm Pool:** 4 pods created with new image
+
+---
+
+## ✅ PHP UPLOAD LIMITS INCREASE (2026-03-04 15:57 UTC)
+
+**Issue**: Clone sites returned error "The uploaded file exceeds the upload_max_filesize directive in php.ini" when uploading themes/plugins
+
+**Investigation:**
+- Default WordPress docker image has restrictive PHP limits:
+  - `upload_max_filesize` = 2M ❌ (too small for modern themes)
+  - `post_max_size` = 8M ❌
+  - `memory_limit` = 128M (adequate but could be higher)
+- Modern WordPress themes often exceed 10MB (some 30-50MB)
+
+**Solution:**
+1. Created `/kubernetes/wp-k8s-service/wordpress-clone/uploads.ini`:
+   ```ini
+   upload_max_filesize = 128M
+   post_max_size = 128M
+   max_execution_time = 300
+   max_input_time = 300
+   memory_limit = 256M
+   ```
+
+2. Updated `Dockerfile` to copy config into PHP conf.d:
+   ```dockerfile
+   COPY uploads.ini /usr/local/etc/php/conf.d/uploads.ini
+   ```
+
+3. Built and deployed new images:
+   - Clone image: `wp-k8s-service-clone:php-upload-fix-20260304-155723`
+   - Service image: `wp-k8s-service:php-upload-fix-20260304-155723`
+
+4. Deleted old warm pods, new pods created with updated config
+
+**Verification:**
+```bash
+$ kubectl exec wordpress-warm-2da19f2c -c wordpress -- php -i | grep upload
+upload_max_filesize => 128M => 128M
+post_max_size => 128M => 128M
+memory_limit => 256M => 256M
+```
+
+**Result**: ✅ Clone sites can now upload files up to 128MB (themes, plugins, media)
+
+**Files Modified:**
+- `/kubernetes/wp-k8s-service/wordpress-clone/uploads.ini` (NEW)
+- `/kubernetes/wp-k8s-service/wordpress-clone/Dockerfile` (added COPY line)
+- `/kubernetes/wp-k8s-service/app/warm_pool_controller.py` (line 49: updated image tag)
+
+**Deployment:**
+- Merged to `feat/kubernetes` branch
+- Deployed at 2026-03-04 15:57 UTC
+- All new warm pods have increased limits
+- Existing clones keep old limits until recreated
 
 ---
 

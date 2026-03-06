@@ -46,7 +46,7 @@ class WarmPoolController:
         self.queue_name = "clone-queue"
 
         # Pod configuration
-        self.warm_pod_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:prefix-fix-20260304-122238"
+        self.warm_pod_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/wp-k8s-service-clone:php-upload-fix-20260304-155723"
         self.mysql_image = "044514005641.dkr.ecr.us-east-1.amazonaws.com/mysql:8.0"
         self.resources = {
             "requests": {"cpu": "250m", "memory": "512Mi"},
